@@ -250,7 +250,7 @@ export default function App() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          maxWidth: 780,
+          maxWidth: 960,
           margin: "0 auto",
           padding: "1.1rem 2rem",
           borderBottom: `1px solid ${t.border}`,
@@ -264,7 +264,6 @@ export default function App() {
               height: 36,
               width: 36,
               objectFit: "contain",
-              filter: mode === "light" ? "brightness(0.85)" : "none",
             }}
           />
           <span
@@ -319,8 +318,8 @@ export default function App() {
       <div
         style={{
           background: t.heroGradient,
-          paddingTop: "4rem",
-          paddingBottom: "2.5rem",
+          paddingTop: "3rem",
+          paddingBottom: "2rem",
           textAlign: "center",
         }}
       >
@@ -355,7 +354,7 @@ export default function App() {
             fontWeight: 800,
             letterSpacing: "-0.045em",
             lineHeight: 1.1,
-            maxWidth: 600,
+            maxWidth: 760,
             margin: "0 auto",
           }}
         >
@@ -370,7 +369,7 @@ export default function App() {
             fontSize: "1rem",
             lineHeight: 1.6,
             marginTop: 16,
-            maxWidth: 480,
+            maxWidth: 660,
             margin: "16px auto 0",
           }}
         >
@@ -400,9 +399,9 @@ export default function App() {
       {/* ═══ MAIN CONTENT ═══ */}
       <div
         style={{
-          maxWidth: 580,
+          maxWidth: 760,
           margin: "0 auto",
-          padding: "2rem 1.5rem 3rem",
+          padding: "2rem 2rem 3rem",
         }}
       >
         {/* ── LANGUAGE SELECTOR ── */}
@@ -453,7 +452,7 @@ export default function App() {
             style={{
               border: `2px dashed ${dragOver ? t.accent : t.border}`,
               borderRadius: 20,
-              padding: "4rem 2rem",
+              padding: "3rem 2.5rem",
               textAlign: "center",
               cursor: "pointer",
               background: dragOver ? t.accentGlow : t.card,
@@ -954,7 +953,6 @@ export default function App() {
               style={{
                 height: 22,
                 objectFit: "contain",
-                filter: mode === "light" ? "brightness(0.85)" : "none",
               }}
             />
             <a
