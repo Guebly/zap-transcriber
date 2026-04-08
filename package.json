@@ -1,0 +1,37 @@
+{
+  "name": "zap-transcriber",
+  "version": "1.0.0",
+  "description": "WhatsApp audio transcriber that runs 100% in the browser. No backend, no data sent. Powered by OpenAI Whisper + Transformers.js. Open source by Guebly.",
+  "private": false,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.4.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "transcription",
+    "whisper",
+    "speech-to-text",
+    "browser",
+    "open-source",
+    "transformers-js"
+  ],
+  "author": "Guebly <https://www.guebly.com.br>",
+  "homepage": "https://www.guebly.com.br",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guebly/zap-transcriber"
+  }
+}
