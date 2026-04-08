@@ -1,442 +1,983 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
-import { pipeline } from '@huggingface/transformers'
+import { useState, useRef, useCallback, useEffect } from "react";
+import { pipeline } from "@huggingface/transformers";
 
-const LOGO = '/logo.png'
+const LOGO = "/logo.png";
 
-const fmtDur = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
-const fmtSize = (b) => b < 1048576 ? (b / 1024).toFixed(1) + ' KB' : (b / 1048576).toFixed(1) + ' MB'
-const wc = (t) => t.trim().split(/\s+/).filter(Boolean).length
+const fmtDur = (s) =>
+  `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const fmtSize = (b) =>
+  b < 1048576
+    ? (b / 1024).toFixed(1) + " KB"
+    : (b / 1048576).toFixed(1) + " MB";
+const wc = (t) => t.trim().split(/\s+/).filter(Boolean).length;
 
 const themes = {
   dark: {
-    bg: '#0b0f0d', surface: '#111916', surface2: '#182019', border: '#1f2e24',
-    text: '#e6f0ea', text2: '#6b8575', accent: '#25D366', accentGlow: 'rgba(37,211,102,0.10)',
-    card: '#111916', shadow: '0 1px 3px rgba(0,0,0,0.3)',
-    toggle: '#182019', toggleBd: '#1f2e24', errBg: '#1a0e0e', errBd: '#331a1a',
+    bg: "#0a0d0b",
+    bg2: "#060806",
+    surface: "#12171400",
+    surface2: "#182019",
+    border: "#1c2b21",
+    text: "#e6f0ea",
+    text2: "#6b8575",
+    text3: "#3d5447",
+    accent: "#25D366",
+    accentSoft: "rgba(37,211,102,0.08)",
+    accentGlow: "rgba(37,211,102,0.15)",
+    card: "#0f1512",
+    cardBorder: "#1a2820",
+    inputBg: "#0c100e",
+    errBg: "#1a0e0e",
+    errBd: "#331a1a",
+    shadow: "0 2px 12px rgba(0,0,0,0.4)",
+    heroGradient:
+      "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(37,211,102,0.06) 0%, transparent 70%)",
   },
   light: {
-    bg: '#f4f7f5', surface: '#ffffff', surface2: '#f0f4f1', border: '#dce5df',
-    text: '#1a2b21', text2: '#6b8575', accent: '#25D366', accentGlow: 'rgba(37,211,102,0.08)',
-    card: '#ffffff', shadow: '0 1px 4px rgba(0,0,0,0.06)',
-    toggle: '#eef2ef', toggleBd: '#dce5df', errBg: '#fef2f2', errBd: '#fecaca',
+    bg: "#f7faf8",
+    bg2: "#eef3f0",
+    surface: "#ffffff00",
+    surface2: "#f0f5f2",
+    border: "#d4dfd8",
+    text: "#1a2b21",
+    text2: "#5a7568",
+    text3: "#9aab9f",
+    accent: "#1db954",
+    accentSoft: "rgba(29,185,84,0.06)",
+    accentGlow: "rgba(29,185,84,0.12)",
+    card: "#ffffff",
+    cardBorder: "#d4dfd8",
+    inputBg: "#f0f5f2",
+    errBg: "#fef2f2",
+    errBd: "#fecaca",
+    shadow: "0 2px 16px rgba(0,0,0,0.06)",
+    heroGradient:
+      "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(29,185,84,0.05) 0%, transparent 70%)",
   },
-}
+};
 
 const LANGS = [
-  { v: 'pt', l: '🇧🇷 Português' },
-  { v: 'en', l: '🇺🇸 English' },
-  { v: 'es', l: '🇪🇸 Español' },
-  { v: 'auto', l: '🔍 Auto' },
-]
+  { v: "pt", l: "🇧🇷 Português" },
+  { v: "en", l: "🇺🇸 English" },
+  { v: "es", l: "🇪🇸 Español" },
+  { v: "auto", l: "🔍 Auto-detectar" },
+];
 
 export default function App() {
-  const [mode, setMode] = useState('dark')
-  const t = themes[mode]
+  const [mode, setMode] = useState("dark");
+  const t = themes[mode];
 
-  const [file, setFile] = useState(null)
-  const [audioUrl, setAudioUrl] = useState(null)
-  const [duration, setDuration] = useState(0)
-  const [lang, setLang] = useState('pt')
-  const [dragOver, setDragOver] = useState(false)
-  const [phase, setPhase] = useState('idle')
-  const [transcript, setTranscript] = useState('')
-  const [copied, setCopied] = useState(false)
-  const [status, setStatus] = useState('')
-  const [progress, setProgress] = useState(0)
-  const [elapsed, setElapsed] = useState(0)
-  const [playing, setPlaying] = useState(false)
-  const [curTime, setCurTime] = useState(0)
+  const [file, setFile] = useState(null);
+  const [audioUrl, setAudioUrl] = useState(null);
+  const [duration, setDuration] = useState(0);
+  const [lang, setLang] = useState("pt");
+  const [dragOver, setDragOver] = useState(false);
+  const [phase, setPhase] = useState("idle");
+  const [transcript, setTranscript] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [curTime, setCurTime] = useState(0);
 
-  const fileRef = useRef(null)
-  const audioRef = useRef(null)
-  const timerRef = useRef(null)
-  const whisperRef = useRef(null)
+  const fileRef = useRef(null);
+  const audioRef = useRef(null);
+  const timerRef = useRef(null);
+  const whisperRef = useRef(null);
 
-  // Elapsed timer
   useEffect(() => {
-    if (phase === 'loading' || phase === 'transcribing') {
-      setElapsed(0)
-      timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000)
-    } else clearInterval(timerRef.current)
-    return () => clearInterval(timerRef.current)
-  }, [phase])
+    if (phase === "loading" || phase === "transcribing") {
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+    } else clearInterval(timerRef.current);
+    return () => clearInterval(timerRef.current);
+  }, [phase]);
 
-  // Audio time
   useEffect(() => {
-    const a = audioRef.current
-    if (!a) return
-    const fn = () => setCurTime(a.currentTime)
-    a.addEventListener('timeupdate', fn)
-    return () => a.removeEventListener('timeupdate', fn)
-  })
+    const a = audioRef.current;
+    if (!a) return;
+    const fn = () => setCurTime(a.currentTime);
+    a.addEventListener("timeupdate", fn);
+    return () => a.removeEventListener("timeupdate", fn);
+  });
 
   const onFile = useCallback((f) => {
-    if (!f) return
-    setFile(f)
-    setTranscript('')
-    setPhase('idle')
-    const url = URL.createObjectURL(f)
-    setAudioUrl(url)
-    const a = new Audio(url)
-    a.addEventListener('loadedmetadata', () => setDuration(a.duration))
-  }, [])
+    if (!f) return;
+    setFile(f);
+    setTranscript("");
+    setPhase("idle");
+    const url = URL.createObjectURL(f);
+    setAudioUrl(url);
+    const a = new Audio(url);
+    a.addEventListener("loadedmetadata", () => setDuration(a.duration));
+  }, []);
 
   const remove = () => {
-    setFile(null); setAudioUrl(null); setDuration(0)
-    setTranscript(''); setPhase('idle'); setPlaying(false); setCurTime(0)
-    if (audioRef.current) audioRef.current.pause()
-  }
+    setFile(null);
+    setAudioUrl(null);
+    setDuration(0);
+    setTranscript("");
+    setPhase("idle");
+    setPlaying(false);
+    setCurTime(0);
+    if (audioRef.current) audioRef.current.pause();
+  };
 
   const togglePlay = () => {
-    if (!audioRef.current) return
-    playing ? audioRef.current.pause() : audioRef.current.play()
-    setPlaying(!playing)
-  }
+    if (!audioRef.current) return;
+    playing ? audioRef.current.pause() : audioRef.current.play();
+    setPlaying(!playing);
+  };
 
   const seek = (e) => {
-    if (!audioRef.current || !duration) return
-    const r = e.currentTarget.getBoundingClientRect()
-    audioRef.current.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration
-  }
+    if (!audioRef.current || !duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    audioRef.current.currentTime =
+      Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration;
+  };
 
   const transcribe = async () => {
-    if (!file) return
+    if (!file) return;
     try {
-      setPhase('loading'); setProgress(0)
-      setStatus('Downloading Whisper model (~75 MB)…')
+      setPhase("loading");
+      setProgress(0);
+      setStatus("Baixando modelo Whisper (~75 MB)…");
 
       if (!whisperRef.current) {
         whisperRef.current = await pipeline(
-          'automatic-speech-recognition',
-          'onnx-community/whisper-tiny',
+          "automatic-speech-recognition",
+          "onnx-community/whisper-tiny",
           {
-            dtype: 'q8',
+            dtype: "q8",
             progress_callback: (p) => {
-              if (p.status === 'progress' && p.progress) {
-                const pct = Math.round(p.progress)
-                setProgress(Math.min(pct, 95))
-                setStatus(`Downloading model… ${pct}%`)
+              if (p.status === "progress" && p.progress) {
+                const pct = Math.round(p.progress);
+                setProgress(Math.min(pct, 95));
+                setStatus(`Baixando modelo… ${pct}%`);
               }
             },
-          }
-        )
+          },
+        );
       }
 
-      setPhase('transcribing'); setProgress(0)
-      setStatus('Transcribing audio…')
+      setPhase("transcribing");
+      setProgress(0);
+      setStatus("Transcrevendo áudio…");
 
-      const url = URL.createObjectURL(file)
-      const opts = { chunk_length_s: 30, stride_length_s: 5 }
-      if (lang !== 'auto') opts.language = lang
-      const result = await whisperRef.current(url, opts)
-      URL.revokeObjectURL(url)
+      const url = URL.createObjectURL(file);
+      const opts = { chunk_length_s: 30, stride_length_s: 5 };
+      if (lang !== "auto") opts.language = lang;
+      const result = await whisperRef.current(url, opts);
+      URL.revokeObjectURL(url);
 
-      setTranscript(result.text.trim())
-      setPhase('done')
+      setTranscript(result.text.trim());
+      setPhase("done");
     } catch (err) {
-      console.error(err)
-      setStatus('Error: ' + err.message)
-      setPhase('error')
+      console.error(err);
+      setStatus("Erro: " + err.message);
+      setPhase("error");
     }
-  }
+  };
 
   const copy = () => {
-    navigator.clipboard.writeText(transcript)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+    navigator.clipboard.writeText(transcript);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   const download = () => {
-    const blob = new Blob([transcript], { type: 'text/plain' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = (file?.name?.replace(/\.[^.]+$/, '') || 'transcription') + '.txt'
-    a.click()
-  }
+    const blob = new Blob([transcript], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download =
+      (file?.name?.replace(/\.[^.]+$/, "") || "transcricao") + ".txt";
+    a.click();
+  };
 
-  const busy = phase === 'loading' || phase === 'transcribing'
-  const pct = duration > 0 ? (curTime / duration) * 100 : 0
+  const busy = phase === "loading" || phase === "transcribing";
+  const pct = duration > 0 ? (curTime / duration) * 100 : 0;
 
-  // ─── Inline styles ───
-  const btn = (active) => ({
-    background: active ? t.accent : t.surface,
-    color: active ? '#fff' : t.text2,
-    border: `1px solid ${active ? t.accent : t.border}`,
-    borderRadius: 8, padding: '5px 10px',
-    fontSize: '0.72rem', fontWeight: active ? 700 : 500,
-    cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
-  })
+  const langBtn = (active) => ({
+    background: active ? t.accent : "transparent",
+    color: active ? "#fff" : t.text2,
+    border: `1.5px solid ${active ? t.accent : t.border}`,
+    borderRadius: 10,
+    padding: "7px 14px",
+    fontSize: "0.78rem",
+    fontWeight: active ? 700 : 500,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    transition: "all 0.2s",
+  });
 
-  const smallBtn = (hl) => ({
-    background: t.surface2, border: `1px solid ${t.border}`,
-    color: hl ? t.accent : t.text2, fontSize: '0.7rem',
-    padding: '4px 9px', borderRadius: 6, cursor: 'pointer',
-    fontFamily: 'inherit', transition: 'all 0.15s',
-  })
+  const actionBtn = (hl) => ({
+    background: hl ? t.accentSoft : "transparent",
+    border: `1.5px solid ${hl ? t.accent : t.border}`,
+    color: hl ? t.accent : t.text2,
+    fontSize: "0.76rem",
+    fontWeight: 600,
+    padding: "6px 14px",
+    borderRadius: 8,
+    cursor: "pointer",
+    fontFamily: "inherit",
+    transition: "all 0.2s",
+  });
 
   return (
-    <div style={{
-      minHeight: '100vh', background: t.bg, color: t.text,
-      fontFamily: "'Segoe UI',-apple-system,system-ui,sans-serif",
-      display: 'flex', flexDirection: 'column', alignItems: 'center',
-      transition: 'background 0.3s, color 0.3s',
-    }}>
-      {/* ── NAV ── */}
-      <nav style={{
-        width: '100%', maxWidth: 640, padding: '1rem 1.5rem',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        borderBottom: `1px solid ${t.border}`,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <img src={LOGO} alt="Guebly" style={{ height: 32, borderRadius: 8 }} />
-          <span style={{ fontWeight: 800, fontSize: '1.1rem', letterSpacing: '-0.03em' }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: t.bg,
+        color: t.text,
+        fontFamily:
+          "'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui, sans-serif",
+        transition: "background 0.35s, color 0.35s",
+      }}
+    >
+      <style>{`
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+        @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-6px)} }
+        ::selection { background: ${t.accent}; color: #fff; }
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-thumb { background: ${t.border}; border-radius: 3px; }
+        body { margin: 0; }
+      `}</style>
+
+      {/* ═══ NAVBAR ═══ */}
+      <nav
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          maxWidth: 780,
+          margin: "0 auto",
+          padding: "1.1rem 2rem",
+          borderBottom: `1px solid ${t.border}`,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src={LOGO}
+            alt="Guebly"
+            style={{
+              height: 36,
+              width: 36,
+              objectFit: "contain",
+              filter: mode === "light" ? "brightness(0.85)" : "none",
+            }}
+          />
+          <span
+            style={{
+              fontWeight: 800,
+              fontSize: "1.2rem",
+              letterSpacing: "-0.03em",
+            }}
+          >
             <span style={{ color: t.accent }}>Zap</span>Transcriber
           </span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{
-            fontSize: '0.6rem', fontWeight: 700,
-            background: t.accentGlow, color: t.accent,
-            padding: '3px 8px', borderRadius: 4,
-            textTransform: 'uppercase', letterSpacing: '0.06em',
-          }}>Open Source</span>
-          <button
-            onClick={() => setMode((m) => (m === 'dark' ? 'light' : 'dark'))}
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <a
+            href="https://github.com/Guebly/zap-transcriber"
+            target="_blank"
+            rel="noreferrer"
             style={{
-              background: t.toggle, border: `1px solid ${t.toggleBd}`,
-              borderRadius: 20, padding: '5px 12px', cursor: 'pointer',
-              fontSize: '0.74rem', color: t.text2, fontFamily: 'inherit',
+              fontSize: "0.72rem",
+              fontWeight: 600,
+              color: t.accent,
+              textDecoration: "none",
+              padding: "4px 10px",
+              border: `1.5px solid ${t.accent}`,
+              borderRadius: 8,
+              transition: "all 0.2s",
             }}
           >
-            {mode === 'dark' ? '☀️ Light' : '🌙 Dark'}
+            ⭐ GitHub
+          </a>
+          <button
+            onClick={() => setMode((m) => (m === "dark" ? "light" : "dark"))}
+            style={{
+              background: "transparent",
+              border: `1.5px solid ${t.border}`,
+              borderRadius: 10,
+              padding: "6px 14px",
+              cursor: "pointer",
+              fontSize: "0.78rem",
+              color: t.text2,
+              fontFamily: "inherit",
+              fontWeight: 600,
+              transition: "all 0.2s",
+            }}
+          >
+            {mode === "dark" ? "☀️ Light" : "🌙 Dark"}
           </button>
         </div>
       </nav>
 
-      {/* ── HERO ── */}
-      <div style={{ textAlign: 'center', padding: '2rem 1.5rem 1.2rem', maxWidth: 520 }}>
-        <h1 style={{
-          fontSize: 'clamp(1.35rem,3.5vw,1.9rem)', fontWeight: 800,
-          letterSpacing: '-0.04em', lineHeight: 1.15,
-        }}>
-          Transcreva áudios do WhatsApp<br />
-          <span style={{ color: t.accent }}>direto no navegador</span>
+      {/* ═══ HERO ═══ */}
+      <div
+        style={{
+          background: t.heroGradient,
+          paddingTop: "4rem",
+          paddingBottom: "2.5rem",
+          textAlign: "center",
+        }}
+      >
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            background: t.accentSoft,
+            border: `1px solid ${t.accent}30`,
+            borderRadius: 20,
+            padding: "5px 14px",
+            marginBottom: 20,
+          }}
+        >
+          <span
+            style={{
+              fontSize: "0.7rem",
+              fontWeight: 700,
+              color: t.accent,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+          >
+            ✦ Open Source · 100% gratuito
+          </span>
+        </div>
+
+        <h1
+          style={{
+            fontSize: "clamp(1.8rem, 5vw, 2.8rem)",
+            fontWeight: 800,
+            letterSpacing: "-0.045em",
+            lineHeight: 1.1,
+            maxWidth: 600,
+            margin: "0 auto",
+          }}
+        >
+          Transcreva áudios do
+          <br />
+          WhatsApp <span style={{ color: t.accent }}>direto no navegador</span>
         </h1>
-        <p style={{ color: t.text2, fontSize: '0.84rem', lineHeight: 1.5, marginTop: 8 }}>
-          100% local · nenhum dado enviado · áudios longos · open source by{' '}
-          <a href="https://www.guebly.com.br" target="_blank" rel="noreferrer"
-            style={{ color: t.accent, textDecoration: 'none', fontWeight: 600 }}>
-            Guebly
-          </a>
+
+        <p
+          style={{
+            color: t.text2,
+            fontSize: "1rem",
+            lineHeight: 1.6,
+            marginTop: 16,
+            maxWidth: 480,
+            margin: "16px auto 0",
+          }}
+        >
+          Nenhum dado é enviado para servidores. O modelo de IA roda localmente
+          no seu dispositivo. Suporta áudios longos de 3+ minutos.
         </p>
+
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "center",
+            gap: 24,
+            marginTop: 28,
+            color: t.text3,
+            fontSize: "0.78rem",
+            fontWeight: 500,
+          }}
+        >
+          {["🔒 100% privado", "⚡ Sem cadastro", "🌐 Multi-idioma"].map(
+            (item) => (
+              <span key={item}>{item}</span>
+            ),
+          )}
+        </div>
       </div>
 
-      {/* ── MAIN ── */}
-      <div style={{ width: '100%', maxWidth: 520, padding: '0 1rem' }}>
-        {/* Language */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.73rem', color: t.text2, marginRight: 3 }}>Idioma:</span>
+      {/* ═══ MAIN CONTENT ═══ */}
+      <div
+        style={{
+          maxWidth: 580,
+          margin: "0 auto",
+          padding: "2rem 1.5rem 3rem",
+        }}
+      >
+        {/* ── LANGUAGE SELECTOR ── */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 20,
+            flexWrap: "wrap",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "0.8rem",
+              color: t.text2,
+              fontWeight: 600,
+              marginRight: 4,
+            }}
+          >
+            Idioma do áudio:
+          </span>
           {LANGS.map(({ v, l }) => (
-            <button key={v} onClick={() => setLang(v)} style={btn(lang === v)}>{l}</button>
+            <button
+              key={v}
+              onClick={() => setLang(v)}
+              style={langBtn(lang === v)}
+            >
+              {l}
+            </button>
           ))}
         </div>
 
-        {/* Dropzone */}
+        {/* ── DROPZONE ── */}
         {!file && (
           <div
             onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
             onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => { e.preventDefault(); setDragOver(false); onFile(e.dataTransfer.files[0]) }}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              onFile(e.dataTransfer.files[0]);
+            }}
             style={{
               border: `2px dashed ${dragOver ? t.accent : t.border}`,
-              borderRadius: 16, padding: '2.5rem 2rem', textAlign: 'center',
-              cursor: 'pointer', background: dragOver ? t.accentGlow : t.surface,
-              transition: 'all 0.25s', boxShadow: t.shadow,
+              borderRadius: 20,
+              padding: "4rem 2rem",
+              textAlign: "center",
+              cursor: "pointer",
+              background: dragOver ? t.accentGlow : t.card,
+              transition: "all 0.3s",
+              boxShadow: t.shadow,
             }}
           >
-            <div style={{ fontSize: 44, marginBottom: 10 }}>{dragOver ? '📥' : '🎤'}</div>
-            <p style={{ fontWeight: 700, fontSize: '0.92rem', marginBottom: 4 }}>Arraste o áudio aqui</p>
-            <p style={{ color: t.text2, fontSize: '0.78rem' }}>
-              ou clique para selecionar · .ogg .opus .mp3 .m4a .wav .webm
+            <div
+              style={{
+                fontSize: 56,
+                marginBottom: 16,
+                animation: dragOver ? "float 0.6s ease infinite" : "none",
+              }}
+            >
+              {dragOver ? "📥" : "🎤"}
+            </div>
+            <p style={{ fontWeight: 700, fontSize: "1.1rem", marginBottom: 8 }}>
+              Arraste o áudio aqui
             </p>
+            <p
+              style={{ color: t.text2, fontSize: "0.85rem", marginBottom: 16 }}
+            >
+              ou clique para selecionar um arquivo
+            </p>
+            <div
+              style={{
+                display: "inline-flex",
+                gap: 6,
+                flexWrap: "wrap",
+                justifyContent: "center",
+              }}
+            >
+              {[".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm"].map((ext) => (
+                <span
+                  key={ext}
+                  style={{
+                    background: t.accentSoft,
+                    color: t.text2,
+                    fontSize: "0.7rem",
+                    fontWeight: 600,
+                    padding: "3px 8px",
+                    borderRadius: 5,
+                  }}
+                >
+                  {ext}
+                </span>
+              ))}
+            </div>
             <input
-              ref={fileRef} type="file" accept="audio/*,.ogg,.opus,.mp3,.m4a,.wav,.webm"
-              style={{ display: 'none' }} onChange={(e) => onFile(e.target.files?.[0])}
+              ref={fileRef}
+              type="file"
+              accept="audio/*,.ogg,.opus,.mp3,.m4a,.wav,.webm"
+              style={{ display: "none" }}
+              onChange={(e) => onFile(e.target.files?.[0])}
             />
           </div>
         )}
 
-        {/* File card */}
+        {/* ── FILE CARD ── */}
         {file && (
-          <div style={{
-            background: t.card, border: `1px solid ${t.border}`,
-            borderRadius: 14, overflow: 'hidden', boxShadow: t.shadow,
-          }}>
+          <div
+            style={{
+              background: t.card,
+              border: `1.5px solid ${t.cardBorder}`,
+              borderRadius: 18,
+              overflow: "hidden",
+              boxShadow: t.shadow,
+            }}
+          >
             {/* File info */}
-            <div style={{
-              padding: '0.9rem 1.1rem', display: 'flex', alignItems: 'center',
-              gap: 10, borderBottom: `1px solid ${t.border}`,
-            }}>
-              <div style={{
-                width: 42, height: 42, background: t.accentGlow, borderRadius: 11,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 19, flexShrink: 0,
-              }}>🎵</div>
+            <div
+              style={{
+                padding: "1.1rem 1.3rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+              }}
+            >
+              <div
+                style={{
+                  width: 48,
+                  height: 48,
+                  background: t.accentGlow,
+                  borderRadius: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 22,
+                  flexShrink: 0,
+                }}
+              >
+                🎵
+              </div>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontWeight: 600, fontSize: '0.85rem',
-                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                }}>{file.name}</div>
-                <div style={{ color: t.text2, fontSize: '0.72rem', marginTop: 2 }}>
-                  {fmtSize(file.size)}{duration > 0 && ` · ${fmtDur(duration)}`}
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: "0.9rem",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {file.name}
+                </div>
+                <div
+                  style={{ color: t.text2, fontSize: "0.76rem", marginTop: 3 }}
+                >
+                  {fmtSize(file.size)}
+                  {duration > 0 && ` · ${fmtDur(duration)}`}
                 </div>
               </div>
-              <button onClick={togglePlay} style={{
-                background: t.surface2, border: `1px solid ${t.border}`,
-                color: t.text, borderRadius: 10, width: 36, height: 36,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                cursor: 'pointer', fontSize: 15, flexShrink: 0,
-              }}>{playing ? '⏸' : '▶'}</button>
-              <button onClick={remove} style={{
-                background: 'none', border: 'none', color: t.text2,
-                cursor: 'pointer', fontSize: 17, padding: 4, flexShrink: 0,
-              }}>✕</button>
-              <audio ref={audioRef} src={audioUrl} onEnded={() => setPlaying(false)} />
+              <button
+                onClick={togglePlay}
+                style={{
+                  background: playing ? t.accent : "transparent",
+                  border: `1.5px solid ${playing ? t.accent : t.border}`,
+                  color: playing ? "#fff" : t.text,
+                  borderRadius: 12,
+                  width: 42,
+                  height: 42,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  fontSize: 16,
+                  flexShrink: 0,
+                  transition: "all 0.2s",
+                }}
+              >
+                {playing ? "⏸" : "▶"}
+              </button>
+              <button
+                onClick={remove}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: t.text3,
+                  cursor: "pointer",
+                  fontSize: 20,
+                  padding: 4,
+                  flexShrink: 0,
+                }}
+              >
+                ✕
+              </button>
+              <audio
+                ref={audioRef}
+                src={audioUrl}
+                onEnded={() => setPlaying(false)}
+              />
             </div>
 
             {/* Seek bar */}
-            <div style={{
-              padding: '0 1.1rem 0.7rem', display: 'flex', alignItems: 'center', gap: 8,
-              paddingTop: '0.5rem',
-            }}>
-              <span style={{ fontSize: '0.64rem', color: t.text2, fontVariantNumeric: 'tabular-nums', minWidth: 30 }}>
+            <div
+              style={{
+                padding: "0 1.3rem 1rem",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "0.68rem",
+                  color: t.text3,
+                  fontVariantNumeric: "tabular-nums",
+                  minWidth: 32,
+                  textAlign: "right",
+                }}
+              >
                 {fmtDur(curTime)}
               </span>
               <div
                 onClick={seek}
                 style={{
-                  flex: 1, height: 6, background: t.surface2,
-                  borderRadius: 3, cursor: 'pointer', overflow: 'hidden',
+                  flex: 1,
+                  height: 8,
+                  background: t.surface2,
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  overflow: "hidden",
+                  position: "relative",
                 }}
               >
-                <div style={{
-                  height: '100%', background: t.accent, borderRadius: 3,
-                  width: `${pct}%`, transition: 'width 0.1s',
-                }} />
+                <div
+                  style={{
+                    height: "100%",
+                    background: t.accent,
+                    borderRadius: 4,
+                    width: `${pct}%`,
+                    transition: "width 0.15s",
+                  }}
+                />
               </div>
-              <span style={{ fontSize: '0.64rem', color: t.text2, fontVariantNumeric: 'tabular-nums', minWidth: 30 }}>
+              <span
+                style={{
+                  fontSize: "0.68rem",
+                  color: t.text3,
+                  fontVariantNumeric: "tabular-nums",
+                  minWidth: 32,
+                }}
+              >
                 {fmtDur(duration)}
               </span>
             </div>
 
+            {/* Divider */}
+            <div style={{ height: 1, background: t.border }} />
+
             {/* CTA */}
-            {phase !== 'done' && (
-              <button onClick={transcribe} disabled={busy} style={{
-                width: '100%', padding: '0.85rem',
-                background: busy ? t.surface2 : t.accent,
-                color: busy ? t.accent : '#fff',
-                border: 'none', borderTop: `1px solid ${t.border}`,
-                fontSize: '0.88rem', fontWeight: 700,
-                cursor: busy ? 'default' : 'pointer', fontFamily: 'inherit',
-              }}>
-                {phase === 'idle' || phase === 'error'
-                  ? '⚡ Transcrever áudio'
+            {phase !== "done" && (
+              <button
+                onClick={transcribe}
+                disabled={busy}
+                style={{
+                  width: "100%",
+                  padding: "1rem",
+                  background: busy ? "transparent" : t.accent,
+                  color: busy ? t.accent : "#fff",
+                  border: "none",
+                  fontSize: "0.95rem",
+                  fontWeight: 700,
+                  cursor: busy ? "default" : "pointer",
+                  fontFamily: "inherit",
+                  transition: "all 0.2s",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                {phase === "idle" || phase === "error"
+                  ? "⚡ Transcrever áudio"
                   : `${status} (${elapsed}s)`}
               </button>
             )}
 
-            {/* Progress */}
             {busy && (
-              <div style={{ height: 3, background: t.bg }}>
-                <div style={{
-                  height: '100%',
-                  width: phase === 'transcribing' ? '100%' : `${progress}%`,
-                  background: t.accent, transition: 'width 0.4s',
-                  animation: phase === 'transcribing' ? 'pulse 1.5s infinite' : 'none',
-                }} />
+              <div style={{ height: 4, background: t.bg }}>
+                <div
+                  style={{
+                    height: "100%",
+                    width: phase === "transcribing" ? "100%" : `${progress}%`,
+                    background: t.accent,
+                    transition: "width 0.4s",
+                    animation:
+                      phase === "transcribing" ? "pulse 1.5s infinite" : "none",
+                    borderRadius: 2,
+                  }}
+                />
               </div>
             )}
           </div>
         )}
 
-        {/* Error */}
-        {phase === 'error' && (
-          <div style={{
-            marginTop: 12, padding: '0.75rem 1rem',
-            background: t.errBg, border: `1px solid ${t.errBd}`,
-            borderRadius: 10, fontSize: '0.8rem', color: '#ef4444',
-          }}>{status}</div>
+        {/* ── ERROR ── */}
+        {phase === "error" && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: "1rem 1.2rem",
+              background: t.errBg,
+              border: `1px solid ${t.errBd}`,
+              borderRadius: 12,
+              fontSize: "0.84rem",
+              color: "#ef4444",
+            }}
+          >
+            {status}
+          </div>
         )}
 
-        {/* Result */}
-        {phase === 'done' && transcript && (
-          <div style={{
-            marginTop: 12, background: t.card, border: `1px solid ${t.border}`,
-            borderRadius: 14, overflow: 'hidden', boxShadow: t.shadow,
-          }}>
-            <div style={{
-              padding: '0.65rem 1.1rem', borderBottom: `1px solid ${t.border}`,
-              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-              flexWrap: 'wrap', gap: 8,
-            }}>
-              <span style={{
-                fontSize: '0.67rem', fontWeight: 700, color: t.accent,
-                textTransform: 'uppercase', letterSpacing: '0.07em',
-              }}>✅ Transcrição · {elapsed}s</span>
-              <div style={{ display: 'flex', gap: 5 }}>
-                <button onClick={copy} style={smallBtn(copied)}>
-                  {copied ? 'Copiado ✓' : '📋 Copiar'}
+        {/* ── RESULT ── */}
+        {phase === "done" && transcript && (
+          <div
+            style={{
+              marginTop: 16,
+              background: t.card,
+              border: `1.5px solid ${t.accent}40`,
+              borderRadius: 18,
+              overflow: "hidden",
+              boxShadow: `${t.shadow}, 0 0 20px ${t.accentSoft}`,
+            }}
+          >
+            <div
+              style={{
+                padding: "0.85rem 1.3rem",
+                borderBottom: `1px solid ${t.border}`,
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 8,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  color: t.accent,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                }}
+              >
+                ✅ Transcrição completa · {elapsed}s
+              </span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={copy} style={actionBtn(copied)}>
+                  {copied ? "✓ Copiado" : "📋 Copiar"}
                 </button>
-                <button onClick={download} style={smallBtn(false)}>💾 .txt</button>
+                <button onClick={download} style={actionBtn(false)}>
+                  💾 Baixar .txt
+                </button>
               </div>
             </div>
-            <div style={{
-              padding: '1.1rem', fontSize: '0.88rem', lineHeight: 1.75,
-              maxHeight: 350, overflowY: 'auto', whiteSpace: 'pre-wrap',
-            }}>{transcript}</div>
-            <div style={{
-              padding: '0.55rem 1.1rem', borderTop: `1px solid ${t.border}`,
-              display: 'flex', gap: 16, fontSize: '0.67rem', color: t.text2,
-            }}>
-              <span>{wc(transcript)} palavras</span>
-              <span>{transcript.length} caracteres</span>
-              <span>~{Math.ceil(wc(transcript) / 200)} min leitura</span>
+            <div
+              style={{
+                padding: "1.3rem",
+                fontSize: "0.92rem",
+                lineHeight: 1.8,
+                maxHeight: 400,
+                overflowY: "auto",
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {transcript}
+            </div>
+            <div
+              style={{
+                padding: "0.7rem 1.3rem",
+                borderTop: `1px solid ${t.border}`,
+                display: "flex",
+                gap: 20,
+                fontSize: "0.72rem",
+                color: t.text2,
+                fontWeight: 500,
+              }}
+            >
+              <span>📝 {wc(transcript)} palavras</span>
+              <span>🔤 {transcript.length} caracteres</span>
+              <span>⏱ ~{Math.ceil(wc(transcript) / 200)} min leitura</span>
             </div>
           </div>
         )}
 
-        {/* How to */}
-        <div style={{
-          marginTop: 20, padding: '1rem', background: t.surface,
-          border: `1px solid ${t.border}`, borderRadius: 14, boxShadow: t.shadow,
-        }}>
-          <p style={{ fontWeight: 700, fontSize: '0.8rem', marginBottom: 8 }}>
+        {/* ── HOW TO ── */}
+        <div
+          style={{
+            marginTop: 32,
+            background: t.card,
+            border: `1.5px solid ${t.cardBorder}`,
+            borderRadius: 18,
+            overflow: "hidden",
+            boxShadow: t.shadow,
+          }}
+        >
+          <div
+            style={{
+              padding: "1rem 1.3rem",
+              borderBottom: `1px solid ${t.border}`,
+              fontWeight: 700,
+              fontSize: "0.88rem",
+            }}
+          >
             📱 Como pegar o áudio do WhatsApp
-          </p>
-          <div style={{ color: t.text2, fontSize: '0.76rem', lineHeight: 1.7 }}>
-            <p>
-              <span style={{ color: t.accent, fontWeight: 700 }}>Celular →</span>{' '}
-              Segure o áudio → Encaminhar → Salve → Baixe
-            </p>
-            <p style={{ marginTop: 3 }}>
-              <span style={{ color: t.accent, fontWeight: 700 }}>WhatsApp Web →</span>{' '}
-              Setinha do áudio → Download
-            </p>
+          </div>
+          <div style={{ padding: "1rem 1.3rem" }}>
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                marginBottom: 12,
+                alignItems: "flex-start",
+              }}
+            >
+              <span
+                style={{
+                  background: t.accentGlow,
+                  color: t.accent,
+                  fontWeight: 800,
+                  fontSize: "0.72rem",
+                  width: 24,
+                  height: 24,
+                  borderRadius: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                1
+              </span>
+              <div>
+                <p style={{ fontWeight: 600, fontSize: "0.84rem" }}>
+                  No celular
+                </p>
+                <p style={{ color: t.text2, fontSize: "0.8rem", marginTop: 2 }}>
+                  Segure o áudio → Encaminhar → Salve no dispositivo ou envie
+                  para si mesmo → Baixe o arquivo
+                </p>
+              </div>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                alignItems: "flex-start",
+              }}
+            >
+              <span
+                style={{
+                  background: t.accentGlow,
+                  color: t.accent,
+                  fontWeight: 800,
+                  fontSize: "0.72rem",
+                  width: 24,
+                  height: 24,
+                  borderRadius: 8,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                2
+              </span>
+              <div>
+                <p style={{ fontWeight: 600, fontSize: "0.84rem" }}>
+                  No WhatsApp Web
+                </p>
+                <p style={{ color: t.text2, fontSize: "0.8rem", marginTop: 2 }}>
+                  Passe o mouse sobre o áudio → Clique na setinha → Download
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Footer */}
-        <footer style={{
-          textAlign: 'center', padding: '1.2rem 0 2rem',
-          color: t.text2, fontSize: '0.68rem', lineHeight: 1.6, opacity: 0.7,
-        }}>
-          <img src={LOGO} alt="" style={{ height: 14, borderRadius: 3, marginRight: 4, verticalAlign: 'middle' }} />
-          <a href="https://www.guebly.com.br" target="_blank" rel="noreferrer"
-            style={{ color: t.accent, textDecoration: 'none' }}>Guebly</a>
-          {' · Open Source · Whisper (MIT) + Transformers.js (Apache 2.0)'}
+        {/* ── FEATURES ── */}
+        <div
+          style={{
+            marginTop: 24,
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 12,
+          }}
+        >
+          {[
+            { icon: "🔒", title: "Privado", desc: "Nada sai do navegador" },
+            { icon: "⚡", title: "Rápido", desc: "Modelo Whisper otimizado" },
+            { icon: "🆓", title: "Gratuito", desc: "Open source, sem limites" },
+          ].map(({ icon, title, desc }) => (
+            <div
+              key={title}
+              style={{
+                background: t.card,
+                border: `1.5px solid ${t.cardBorder}`,
+                borderRadius: 14,
+                padding: "1.1rem",
+                textAlign: "center",
+                boxShadow: t.shadow,
+              }}
+            >
+              <div style={{ fontSize: 24, marginBottom: 8 }}>{icon}</div>
+              <p
+                style={{
+                  fontWeight: 700,
+                  fontSize: "0.82rem",
+                  marginBottom: 4,
+                }}
+              >
+                {title}
+              </p>
+              <p style={{ color: t.text2, fontSize: "0.72rem" }}>{desc}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* ── FOOTER ── */}
+        <footer
+          style={{
+            textAlign: "center",
+            padding: "2.5rem 0 1.5rem",
+            borderTop: `1px solid ${t.border}`,
+            marginTop: 40,
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              marginBottom: 8,
+            }}
+          >
+            <img
+              src={LOGO}
+              alt="Guebly"
+              style={{
+                height: 22,
+                objectFit: "contain",
+                filter: mode === "light" ? "brightness(0.85)" : "none",
+              }}
+            />
+            <a
+              href="https://www.guebly.com.br"
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                color: t.text,
+                textDecoration: "none",
+                fontWeight: 700,
+                fontSize: "0.88rem",
+              }}
+            >
+              Guebly
+            </a>
+          </div>
+          <p style={{ color: t.text3, fontSize: "0.72rem", lineHeight: 1.6 }}>
+            Open Source · Whisper (MIT) + Transformers.js (Apache 2.0)
+            <br />
+            Feito com ❤️ no Brasil
+          </p>
         </footer>
       </div>
     </div>
-  )
+  );
 }
