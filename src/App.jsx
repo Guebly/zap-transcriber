@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, env } from "@huggingface/transformers";
+
+// Garante que o WASM seja carregado do CDN correto sem depender do pre-bundle do Vite
+env.allowLocalModels = false;
 
 const LOGO = "/logo.png";
 
@@ -174,11 +177,16 @@ export default function App() {
       setTranscript(result.text.trim());
       setPhase("done");
     } catch (err) {
-      console.error(err);
-      const msg = err.message || "";
-      const friendlyMsg = msg.includes("fetch")
-        ? "Falha ao baixar o modelo. Verifique sua conexão e recarregue a página."
-        : "Erro: " + msg;
+      console.error("Transcription error:", err);
+      const msg = err.message || String(err);
+      let friendlyMsg;
+      if (msg.includes("fetch") || msg.includes("network") || msg.includes("NetworkError")) {
+        friendlyMsg = "Não foi possível baixar o modelo Whisper. Verifique sua conexão com a internet e tente novamente.";
+      } else if (msg.includes("SharedArrayBuffer") || msg.includes("COEP") || msg.includes("cross-origin")) {
+        friendlyMsg = "Erro de segurança do navegador. Recarregue a página e tente novamente.";
+      } else {
+        friendlyMsg = "Erro: " + msg;
+      }
       setStatus(friendlyMsg);
       setPhase("error");
     }
