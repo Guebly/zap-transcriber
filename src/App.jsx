@@ -90,11 +90,25 @@ export default function App() {
   const whisperRef = useRef(null);
 
   useEffect(() => {
-    if (phase === "loading" || phase === "transcribing") {
+    // Só zera o elapsed quando começa do zero (fase loading), não quando vai pra transcribing
+    if (phase === "loading") {
       setElapsed(0);
       timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    } else clearInterval(timerRef.current);
-    return () => clearInterval(timerRef.current);
+    } else if (phase === "transcribing") {
+      // Mantém o timer rodando sem resetar
+      if (!timerRef.current) {
+        timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+      }
+    } else {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    return () => {
+      if (phase !== "transcribing") {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [phase]);
 
   useEffect(() => {
@@ -145,12 +159,12 @@ export default function App() {
     try {
       setPhase("loading");
       setProgress(0);
-      setStatus("Baixando modelo Whisper (~75 MB)…");
+      setStatus("Baixando modelo Whisper (~150 MB)…");
 
       if (!whisperRef.current) {
         whisperRef.current = await pipeline(
           "automatic-speech-recognition",
-          "onnx-community/whisper-tiny",
+          "onnx-community/whisper-base",
           {
             dtype: "q8",
             progress_callback: (p) => {
@@ -169,12 +183,24 @@ export default function App() {
       setStatus("Transcrevendo áudio…");
 
       const url = URL.createObjectURL(file);
-      const opts = { chunk_length_s: 30, stride_length_s: 5 };
+      const opts = {
+        chunk_length_s: 28,
+        stride_length_s: 6,
+        // return_timestamps evita loops de alucinação em áudios longos
+        return_timestamps: true,
+        // impede que o modelo repita o mesmo trecho
+        no_repeat_ngram_size: 3,
+      };
       if (lang !== "auto") opts.language = lang;
       const result = await whisperRef.current(url, opts);
       URL.revokeObjectURL(url);
 
-      setTranscript(result.text.trim());
+      // result.text ou result.chunks[].text dependendo do modo
+      const text =
+        result.text?.trim() ||
+        result.chunks?.map((c) => c.text).join(" ").trim() ||
+        "";
+      setTranscript(text);
       setPhase("done");
     } catch (err) {
       console.error("Transcription error:", err);
