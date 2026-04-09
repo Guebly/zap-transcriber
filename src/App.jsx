@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { pipeline, env } from "@huggingface/transformers";
 
-// Garante que o WASM seja carregado do CDN correto sem depender do pre-bundle do Vite
 env.allowLocalModels = false;
+// Força single-thread: evita carregar o ort-wasm-simd-threaded.wasm que pode falhar
+env.backends.onnx.wasm.numThreads = 1;
 
 const LOGO = "/logo.png";
 
@@ -204,16 +205,7 @@ export default function App() {
       setPhase("done");
     } catch (err) {
       console.error("Transcription error:", err);
-      const msg = err.message || String(err);
-      let friendlyMsg;
-      if (msg.includes("fetch") || msg.includes("network") || msg.includes("NetworkError")) {
-        friendlyMsg = "Não foi possível baixar o modelo Whisper. Verifique sua conexão com a internet e tente novamente.";
-      } else if (msg.includes("SharedArrayBuffer") || msg.includes("COEP") || msg.includes("cross-origin")) {
-        friendlyMsg = "Erro de segurança do navegador. Recarregue a página e tente novamente.";
-      } else {
-        friendlyMsg = "Erro: " + msg;
-      }
-      setStatus(friendlyMsg);
+      setStatus("Erro: " + (err.message || String(err)));
       setPhase("error");
     }
   };
