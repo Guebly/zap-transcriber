@@ -15,3 +15,79 @@ html, body, #root {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
+
+/* ── Responsive layout ── */
+.app-nav {
+  padding: 1.1rem 2rem !important;
+}
+
+.app-main {
+  padding: 2rem 2rem 3rem !important;
+}
+
+.hero-section {
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
+}
+
+.hero-stats {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-top: 28px;
+  flex-wrap: wrap;
+}
+
+.features-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, 1fr) !important;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.result-stats {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.nav-github {
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .app-nav {
+    padding: 0.8rem 1rem !important;
+  }
+
+  .app-main {
+    padding: 1.2rem 0.9rem 2rem !important;
+  }
+
+  .hero-section {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .hero-stats {
+    gap: 10px;
+    font-size: 0.72rem;
+  }
+
+  .features-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .result-stats {
+    gap: 10px;
+  }
+
+  .nav-github span {
+    display: none;
+  }
+
+  .nav-github::before {
+    content: '⭐';
+  }
+}

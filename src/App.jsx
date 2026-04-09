@@ -175,7 +175,11 @@ export default function App() {
       setPhase("done");
     } catch (err) {
       console.error(err);
-      setStatus("Erro: " + err.message);
+      const msg = err.message || "";
+      const friendlyMsg = msg.includes("fetch")
+        ? "Falha ao baixar o modelo. Verifique sua conexão e recarregue a página."
+        : "Erro: " + msg;
+      setStatus(friendlyMsg);
       setPhase("error");
     }
   };
@@ -246,13 +250,13 @@ export default function App() {
 
       {/* ═══ NAVBAR ═══ */}
       <nav
+        className="app-nav"
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           maxWidth: 960,
           margin: "0 auto",
-          padding: "1.1rem 2rem",
           borderBottom: `1px solid ${t.border}`,
         }}
       >
@@ -281,6 +285,7 @@ export default function App() {
             href="https://github.com/Guebly/zap-transcriber"
             target="_blank"
             rel="noreferrer"
+            className="nav-github"
             style={{
               fontSize: "0.72rem",
               fontWeight: 600,
@@ -292,7 +297,7 @@ export default function App() {
               transition: "all 0.2s",
             }}
           >
-            ⭐ GitHub
+            <span>⭐ GitHub</span>
           </a>
           <button
             onClick={() => setMode((m) => (m === "dark" ? "light" : "dark"))}
@@ -316,6 +321,7 @@ export default function App() {
 
       {/* ═══ HERO ═══ */}
       <div
+        className="hero-section"
         style={{
           background: t.heroGradient,
           paddingTop: "3rem",
@@ -378,11 +384,8 @@ export default function App() {
         </p>
 
         <div
+          className="hero-stats"
           style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: 24,
-            marginTop: 28,
             color: t.text3,
             fontSize: "0.78rem",
             fontWeight: 500,
@@ -398,10 +401,10 @@ export default function App() {
 
       {/* ═══ MAIN CONTENT ═══ */}
       <div
+        className="app-main"
         style={{
           maxWidth: 760,
           margin: "0 auto",
-          padding: "2rem 2rem 3rem",
         }}
       >
         {/* ── LANGUAGE SELECTOR ── */}
@@ -779,11 +782,10 @@ export default function App() {
               {transcript}
             </div>
             <div
+              className="result-stats"
               style={{
                 padding: "0.7rem 1.3rem",
                 borderTop: `1px solid ${t.border}`,
-                display: "flex",
-                gap: 20,
                 fontSize: "0.72rem",
                 color: t.text2,
                 fontWeight: 500,
@@ -890,14 +892,7 @@ export default function App() {
         </div>
 
         {/* ── FEATURES ── */}
-        <div
-          style={{
-            marginTop: 24,
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 12,
-          }}
-        >
+        <div className="features-grid">
           {[
             { icon: "🔒", title: "Privado", desc: "Nada sai do navegador" },
             { icon: "⚡", title: "Rápido", desc: "Modelo Whisper otimizado" },
