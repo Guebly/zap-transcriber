@@ -17,6 +17,11 @@ self.onmessage = async ({ data }) => {
       whisperPipeline = null;
       loadedModel = null;
       self.postMessage({ type: "loading" });
+    } else {
+      self.postMessage({ type: "cached" });
+    }
+
+    if (!whisperPipeline) {
 
       const dlFiles = {};
       whisperPipeline = await pipeline(

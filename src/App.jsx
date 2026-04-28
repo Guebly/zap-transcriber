@@ -148,28 +148,26 @@ export default function App() {
     });
   }, []);
 
-  // ── Initialize Web Worker ──
-  useEffect(() => {
-    const worker = new Worker(
-      new URL("./whisper.worker.js", import.meta.url),
-      { type: "module" },
-    );
-
-    worker.onmessage = ({ data }) => {
+  // ── Worker message handler (stable, uses only refs) ──
+  const handleWorkerMessage = useCallback(
+    ({ data }) => {
       const { type, payload } = data;
       const id = processingIdRef.current;
       if (!id) return;
 
-      if (type === "loading") {
+      if (type === "cached") {
         setQueue((q) =>
           q.map((item) =>
             item.id === id
-              ? {
-                  ...item,
-                  status: "loading",
-                  progress: 0,
-                  statusMsg: "Baixando modelo…",
-                }
+              ? { ...item, status: "loading", progress: 100, statusMsg: "Modelo em cache ✓" }
+              : item,
+          ),
+        );
+      } else if (type === "loading") {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id
+              ? { ...item, status: "loading", progress: 0, statusMsg: "Baixando modelo…" }
               : item,
           ),
         );
@@ -177,11 +175,7 @@ export default function App() {
         setQueue((q) =>
           q.map((item) =>
             item.id === id
-              ? {
-                  ...item,
-                  progress: payload,
-                  statusMsg: `Baixando modelo… ${payload}%`,
-                }
+              ? { ...item, progress: payload, statusMsg: `Baixando modelo… ${payload}%` }
               : item,
           ),
         );
@@ -209,10 +203,7 @@ export default function App() {
       } else if (type === "result") {
         const text =
           payload.text?.trim() ||
-          payload.chunks
-            ?.map((c) => c.text)
-            .join(" ")
-            .trim() ||
+          payload.chunks?.map((c) => c.text).join(" ").trim() ||
           "";
         const chunks = payload.chunks || [];
         setQueue((q) => {
@@ -227,19 +218,47 @@ export default function App() {
       } else if (type === "error") {
         setQueue((q) => {
           const updated = q.map((item) =>
-            item.id === id
-              ? { ...item, status: "error", error: payload }
-              : item,
+            item.id === id ? { ...item, status: "error", error: payload } : item,
           );
           setTimeout(() => startNext(updated), 0);
           return updated;
         });
       }
-    };
+    },
+    [startNext],
+  );
 
+  // ── Create / recreate worker ──
+  const initWorker = useCallback(() => {
+    workerRef.current?.terminate();
+    const worker = new Worker(
+      new URL("./whisper.worker.js", import.meta.url),
+      { type: "module" },
+    );
+    worker.onmessage = handleWorkerMessage;
     workerRef.current = worker;
-    return () => worker.terminate();
-  }, [startNext]);
+  }, [handleWorkerMessage]);
+
+  useEffect(() => {
+    initWorker();
+    return () => workerRef.current?.terminate();
+  }, [initWorker]);
+
+  // ── Cancel current transcription ──
+  const cancelTranscription = useCallback(() => {
+    const id = processingIdRef.current;
+    if (!id) return;
+    processingIdRef.current = null;
+    setIsProcessing(false);
+    initWorker();
+    setQueue((q) =>
+      q.map((item) =>
+        item.id === id
+          ? { ...item, status: "idle", progress: 0, elapsed: 0, statusMsg: "" }
+          : item,
+      ),
+    );
+  }, [initWorker]);
 
   // ── Elapsed timer ──
   useEffect(() => {
@@ -979,23 +998,42 @@ export default function App() {
                   {isPlaying ? "⏸" : "▶"}
                 </button>
 
-                {/* Remove */}
-                <button
-                  onClick={() => removeItem(item.id)}
-                  disabled={isCurrentlyProcessing}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: t.text3,
-                    cursor: isCurrentlyProcessing ? "default" : "pointer",
-                    fontSize: 20,
-                    padding: 4,
-                    flexShrink: 0,
-                    opacity: isCurrentlyProcessing ? 0.3 : 1,
-                  }}
-                >
-                  ✕
-                </button>
+                {/* Cancel (when processing) or Remove */}
+                {isCurrentlyProcessing ? (
+                  <button
+                    onClick={cancelTranscription}
+                    style={{
+                      background: "none",
+                      border: `1.5px solid ${t.border}`,
+                      color: "#ef4444",
+                      cursor: "pointer",
+                      fontSize: "0.72rem",
+                      fontWeight: 700,
+                      padding: "4px 10px",
+                      borderRadius: 8,
+                      fontFamily: "inherit",
+                      flexShrink: 0,
+                      transition: "all 0.2s",
+                    }}
+                  >
+                    ✕ Cancelar
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => removeItem(item.id)}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: t.text3,
+                      cursor: "pointer",
+                      fontSize: 20,
+                      padding: 4,
+                      flexShrink: 0,
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
 
                 <audio
                   ref={(el) => {
