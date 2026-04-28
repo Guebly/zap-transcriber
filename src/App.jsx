@@ -181,6 +181,7 @@ export default function App() {
       const el = document.createElement(isVideo(item.file) ? "video" : "audio");
       el.src = item.url;
       el.preload = "auto";
+      el.muted = true; // muted media bypasses autoplay policy (no user gesture needed)
 
       const onErr = () =>
         reject(
@@ -194,7 +195,9 @@ export default function App() {
 
       el.addEventListener("loadedmetadata", () => {
         const duration = el.duration;
+        // Create AudioContext AFTER loadedmetadata so it counts as user-initiated
         const ctx = new AudioContext({ sampleRate: TARGET_SR });
+        // createMediaElementSource captures audio even when el.muted = true
         const source = ctx.createMediaElementSource(el);
         const processor = ctx.createScriptProcessor(4096, 1, 1);
         const silencer = ctx.createGain();
