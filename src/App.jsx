@@ -118,8 +118,83 @@ export default function App() {
     queueRef.current = queue;
   }, [queue]);
 
+  // ── Decode audio/video file → mono Float32Array at 16 kHz ──
+  // AudioContext is not available in Web Workers, so decoding happens here.
+  // Fast path: decodeAudioData() (works for all audio formats + MP4/AAC).
+  // Fallback: MediaElement + ScriptProcessorNode (real-time, for other video containers).
+  const decodeFile = useCallback(async (item, onFallback) => {
+    const SR = 16000;
+
+    const toMono = (decoded) => {
+      if (decoded.numberOfChannels === 1) return decoded.getChannelData(0).slice();
+      const a = decoded.getChannelData(0);
+      const b = decoded.getChannelData(1);
+      const out = new Float32Array(a.length);
+      for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i]) / 2;
+      return out;
+    };
+
+    // Fast path
+    try {
+      const buf = await item.file.arrayBuffer();
+      const ctx = new AudioContext({ sampleRate: SR });
+      let decoded;
+      try {
+        decoded = await ctx.decodeAudioData(buf);
+      } finally {
+        ctx.close();
+      }
+      return { samples: toMono(decoded), duration: decoded.duration };
+    } catch (_) {
+      // Fast path failed — try MediaElement fallback (video containers)
+    }
+
+    onFallback?.();
+
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.src = item.url;
+      video.preload = "auto";
+
+      video.addEventListener("error", () =>
+        reject(new Error("Formato de vídeo não suportado pelo navegador.")),
+      );
+
+      video.addEventListener("loadedmetadata", () => {
+        const duration = video.duration;
+        const ctx = new AudioContext({ sampleRate: SR });
+        const source = ctx.createMediaElementSource(video);
+        // eslint-disable-next-line no-undef
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        const silencer = ctx.createGain();
+        silencer.gain.value = 0;
+        const collected = [];
+
+        processor.onaudioprocess = (e) => {
+          collected.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        };
+
+        source.connect(processor);
+        processor.connect(silencer);
+        silencer.connect(ctx.destination);
+
+        video.addEventListener("ended", () => {
+          processor.disconnect();
+          silencer.disconnect();
+          ctx.close();
+          const total = collected.reduce((s, c) => s + c.length, 0);
+          const out = new Float32Array(total);
+          let off = 0;
+          for (const chunk of collected) { out.set(chunk, off); off += chunk.length; }
+          resolve({ samples: out, duration });
+        });
+
+        video.play().catch(reject);
+      });
+    });
+  }, []);
+
   // ── Start next idle item in queue ──
-  // Audio is decoded in the main thread (AudioContext not available in workers)
   const startNext = useCallback(async (currentQueue) => {
     const next = currentQueue.find((i) => i.status === "idle");
     if (!next) {
@@ -132,24 +207,20 @@ export default function App() {
     processingIdRef.current = id;
     setIsProcessing(true);
 
-    let audio;
-    let duration = next.duration || 60;
+    let audio, duration;
     try {
-      const arrayBuffer = await next.file.arrayBuffer();
-      const ctx = new AudioContext({ sampleRate: 16000 });
-      const decoded = await ctx.decodeAudioData(arrayBuffer);
-      duration = decoded.duration;
-      ctx.close();
-
-      // Mix down to mono
-      if (decoded.numberOfChannels === 1) {
-        audio = decoded.getChannelData(0).slice(); // copy to detach
-      } else {
-        const ch0 = decoded.getChannelData(0);
-        const ch1 = decoded.getChannelData(1);
-        audio = new Float32Array(ch0.length);
-        for (let i = 0; i < ch0.length; i++) audio[i] = (ch0[i] + ch1[i]) / 2;
-      }
+      const { samples, duration: dur } = await decodeFile(next, () => {
+        // Notify UI that we're using the real-time fallback
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id
+              ? { ...item, status: "loading", statusMsg: "Extraindo áudio do vídeo…" }
+              : item,
+          ),
+        );
+      });
+      audio = samples;
+      duration = dur;
     } catch (err) {
       setQueue((q) => {
         const updated = q.map((item) =>
@@ -165,8 +236,7 @@ export default function App() {
       return;
     }
 
-    // Bail out if cancelled during decode
-    if (processingIdRef.current !== id) return;
+    if (processingIdRef.current !== id) return; // cancelled during decode
 
     const opts = {
       chunk_length_s: 28,
@@ -177,13 +247,10 @@ export default function App() {
     if (langRef.current !== "auto") opts.language = langRef.current;
 
     workerRef.current?.postMessage(
-      {
-        type: "transcribe",
-        payload: { audio, opts, model: modelRef.current, duration },
-      },
-      [audio.buffer], // transfer buffer — zero-copy
+      { type: "transcribe", payload: { audio, opts, model: modelRef.current, duration } },
+      [audio.buffer],
     );
-  }, []);
+  }, [decodeFile]);
 
   // ── Worker message handler (stable, uses only refs) ──
   const handleWorkerMessage = useCallback(
