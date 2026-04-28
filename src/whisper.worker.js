@@ -10,7 +10,7 @@ self.onmessage = async ({ data }) => {
   const { type, payload } = data;
   if (type !== "transcribe") return;
 
-  const { url, opts, model, duration } = payload;
+  const { audio, opts, model, duration } = payload;
 
   try {
     if (!whisperPipeline || loadedModel !== model) {
@@ -59,7 +59,7 @@ self.onmessage = async ({ data }) => {
     const totalChunks = Math.max(1, Math.ceil((duration || 60) / chunkStep));
     let processedChunks = 0;
 
-    const result = await whisperPipeline(url, {
+    const result = await whisperPipeline(audio, {
       ...opts,
       chunk_callback: () => {
         processedChunks++;

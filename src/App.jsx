@@ -119,15 +119,54 @@ export default function App() {
   }, [queue]);
 
   // ── Start next idle item in queue ──
-  const startNext = useCallback((currentQueue) => {
+  // Audio is decoded in the main thread (AudioContext not available in workers)
+  const startNext = useCallback(async (currentQueue) => {
     const next = currentQueue.find((i) => i.status === "idle");
     if (!next) {
       processingIdRef.current = null;
       setIsProcessing(false);
       return;
     }
-    processingIdRef.current = next.id;
+
+    const id = next.id;
+    processingIdRef.current = id;
     setIsProcessing(true);
+
+    let audio;
+    let duration = next.duration || 60;
+    try {
+      const arrayBuffer = await next.file.arrayBuffer();
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      const decoded = await ctx.decodeAudioData(arrayBuffer);
+      duration = decoded.duration;
+      ctx.close();
+
+      // Mix down to mono
+      if (decoded.numberOfChannels === 1) {
+        audio = decoded.getChannelData(0).slice(); // copy to detach
+      } else {
+        const ch0 = decoded.getChannelData(0);
+        const ch1 = decoded.getChannelData(1);
+        audio = new Float32Array(ch0.length);
+        for (let i = 0; i < ch0.length; i++) audio[i] = (ch0[i] + ch1[i]) / 2;
+      }
+    } catch (err) {
+      setQueue((q) => {
+        const updated = q.map((item) =>
+          item.id === id
+            ? { ...item, status: "error", error: "Erro ao decodificar: " + err.message }
+            : item,
+        );
+        setTimeout(() => startNext(updated), 0);
+        return updated;
+      });
+      processingIdRef.current = null;
+      setIsProcessing(false);
+      return;
+    }
+
+    // Bail out if cancelled during decode
+    if (processingIdRef.current !== id) return;
 
     const opts = {
       chunk_length_s: 28,
@@ -137,15 +176,13 @@ export default function App() {
     };
     if (langRef.current !== "auto") opts.language = langRef.current;
 
-    workerRef.current?.postMessage({
-      type: "transcribe",
-      payload: {
-        url: next.url,
-        opts,
-        model: modelRef.current,
-        duration: next.duration || 60,
+    workerRef.current?.postMessage(
+      {
+        type: "transcribe",
+        payload: { audio, opts, model: modelRef.current, duration },
       },
-    });
+      [audio.buffer], // transfer buffer — zero-copy
+    );
   }, []);
 
   // ── Worker message handler (stable, uses only refs) ──
