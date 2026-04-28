@@ -1,26 +1,29 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { pipeline, env } from "@huggingface/transformers";
-
-env.allowLocalModels = false;
-// Força single-thread: evita carregar o ort-wasm-simd-threaded.wasm que pode falhar
-env.backends.onnx.wasm.numThreads = 1;
 
 const LOGO = "/logo.png";
 
 const fmtDur = (s) =>
   `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const fmtSize = (b) =>
-  b < 1048576
+  b < 1_048_576
     ? (b / 1024).toFixed(1) + " KB"
-    : (b / 1048576).toFixed(1) + " MB";
+    : (b / 1_048_576).toFixed(1) + " MB";
 const wc = (t) => t.trim().split(/\s+/).filter(Boolean).length;
-const isVideo = (f) => f?.type?.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm)$/i.test(f?.name || "");
+const isVideo = (f) =>
+  f?.type?.startsWith("video/") ||
+  /\.(mp4|mov|avi|mkv)$/i.test(f?.name || "");
+const fmtSRT = (s) => {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  const ms = Math.round((s % 1) * 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+};
 
 const themes = {
   dark: {
     bg: "#0a0d0b",
     bg2: "#060806",
-    surface: "#12171400",
     surface2: "#182019",
     border: "#1c2b21",
     text: "#e6f0ea",
@@ -31,17 +34,16 @@ const themes = {
     accentGlow: "rgba(37,211,102,0.15)",
     card: "#0f1512",
     cardBorder: "#1a2820",
-    inputBg: "#0c100e",
     errBg: "#1a0e0e",
     errBd: "#331a1a",
     shadow: "0 2px 12px rgba(0,0,0,0.4)",
     heroGradient:
       "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(37,211,102,0.06) 0%, transparent 70%)",
+    warnColor: "#f59e0b",
   },
   light: {
     bg: "#f7faf8",
     bg2: "#eef3f0",
-    surface: "#ffffff00",
     surface2: "#f0f5f2",
     border: "#d4dfd8",
     text: "#1a2b21",
@@ -52,12 +54,12 @@ const themes = {
     accentGlow: "rgba(29,185,84,0.12)",
     card: "#ffffff",
     cardBorder: "#d4dfd8",
-    inputBg: "#f0f5f2",
     errBg: "#fef2f2",
     errBd: "#fecaca",
     shadow: "0 2px 16px rgba(0,0,0,0.06)",
     heroGradient:
       "radial-gradient(ellipse 60% 50% at 50% 0%, rgba(29,185,84,0.05) 0%, transparent 70%)",
+    warnColor: "#d97706",
   },
 };
 
@@ -65,185 +67,359 @@ const LANGS = [
   { v: "pt", l: "🇧🇷 Português" },
   { v: "en", l: "🇺🇸 English" },
   { v: "es", l: "🇪🇸 Español" },
-  { v: "auto", l: "🔍 Auto-detectar" },
+  { v: "auto", l: "🔍 Auto" },
 ];
+
+const MODELS = [
+  {
+    v: "onnx-community/whisper-tiny",
+    l: "Tiny ~40 MB",
+    desc: "Mais rápido, menos preciso",
+  },
+  {
+    v: "onnx-community/whisper-base",
+    l: "Base ~150 MB",
+    desc: "Mais lento, mais preciso",
+  },
+];
+
+let _id = 0;
+const mkId = () => ++_id;
 
 export default function App() {
   const [mode, setMode] = useState("dark");
   const t = themes[mode];
 
-  const [file, setFile] = useState(null);
-  const [audioUrl, setAudioUrl] = useState(null);
-  const [duration, setDuration] = useState(0);
+  const [queue, setQueue] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [lang, setLang] = useState("pt");
+  const [model, setModel] = useState("onnx-community/whisper-base");
+  const [showTimestamps, setShowTimestamps] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const [phase, setPhase] = useState("idle");
-  const [transcript, setTranscript] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState(0);
-  const [elapsed, setElapsed] = useState(0);
-  const [playing, setPlaying] = useState(false);
-  const [curTime, setCurTime] = useState(0);
+  const [copiedId, setCopiedId] = useState(null);
+  const [playingIds, setPlayingIds] = useState({});
+  const [curTimes, setCurTimes] = useState({});
 
   const fileRef = useRef(null);
-  const audioRef = useRef(null);
-  const timerRef = useRef(null);
-  const whisperRef = useRef(null);
-  const dlFilesRef = useRef({});
+  const workerRef = useRef(null);
+  const processingIdRef = useRef(null);
+  const audioRefsMap = useRef({});
+  const langRef = useRef(lang);
+  const modelRef = useRef(model);
+  const queueRef = useRef([]);
 
   useEffect(() => {
-    // Só zera o elapsed quando começa do zero (fase loading), não quando vai pra transcribing
-    if (phase === "loading") {
-      setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    } else if (phase === "transcribing") {
-      // Mantém o timer rodando sem resetar
-      if (!timerRef.current) {
-        timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-      }
-    } else {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+    langRef.current = lang;
+  }, [lang]);
+  useEffect(() => {
+    modelRef.current = model;
+  }, [model]);
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  // ── Start next idle item in queue ──
+  const startNext = useCallback((currentQueue) => {
+    const next = currentQueue.find((i) => i.status === "idle");
+    if (!next) {
+      processingIdRef.current = null;
+      setIsProcessing(false);
+      return;
     }
-    return () => {
-      if (phase !== "transcribing") {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+    processingIdRef.current = next.id;
+    setIsProcessing(true);
+
+    const opts = {
+      chunk_length_s: 28,
+      stride_length_s: 6,
+      return_timestamps: true,
+      no_repeat_ngram_size: 3,
     };
-  }, [phase]);
+    if (langRef.current !== "auto") opts.language = langRef.current;
 
-  useEffect(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    const fn = () => setCurTime(a.currentTime);
-    a.addEventListener("timeupdate", fn);
-    return () => a.removeEventListener("timeupdate", fn);
-  });
-
-  const onFile = useCallback((f) => {
-    if (!f) return;
-    setFile(f);
-    setTranscript("");
-    setPhase("idle");
-    const url = URL.createObjectURL(f);
-    setAudioUrl(url);
-    // Audio element works for both audio and video (extracts audio track)
-    const a = new Audio(url);
-    a.addEventListener("loadedmetadata", () => setDuration(a.duration));
+    workerRef.current?.postMessage({
+      type: "transcribe",
+      payload: {
+        url: next.url,
+        opts,
+        model: modelRef.current,
+        duration: next.duration || 60,
+      },
+    });
   }, []);
 
-  const remove = () => {
-    setFile(null);
-    setAudioUrl(null);
-    setDuration(0);
-    setTranscript("");
-    setPhase("idle");
-    setPlaying(false);
-    setCurTime(0);
-    if (audioRef.current) audioRef.current.pause();
-  };
+  // ── Initialize Web Worker ──
+  useEffect(() => {
+    const worker = new Worker(
+      new URL("./whisper.worker.js", import.meta.url),
+      { type: "module" },
+    );
 
-  const togglePlay = () => {
-    if (!audioRef.current) return;
-    playing ? audioRef.current.pause() : audioRef.current.play();
-    setPlaying(!playing);
-  };
+    worker.onmessage = ({ data }) => {
+      const { type, payload } = data;
+      const id = processingIdRef.current;
+      if (!id) return;
 
-  const seek = (e) => {
-    if (!audioRef.current || !duration) return;
-    const r = e.currentTarget.getBoundingClientRect();
-    audioRef.current.currentTime =
-      Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * duration;
-  };
-
-  const transcribe = async () => {
-    if (!file) return;
-    try {
-      setPhase("loading");
-      setProgress(0);
-      setStatus("Baixando modelo Whisper (~150 MB)…");
-
-      if (!whisperRef.current) {
-        dlFilesRef.current = {};
-        whisperRef.current = await pipeline(
-          "automatic-speech-recognition",
-          "onnx-community/whisper-base",
-          {
-            dtype: "q8",
-            progress_callback: (p) => {
-              if (p.status === "initiate" && p.file) {
-                dlFilesRef.current[p.file] = { loaded: 0, total: 0 };
-              } else if (p.status === "progress" && p.file) {
-                dlFilesRef.current[p.file] = {
-                  loaded: p.loaded || 0,
-                  total: p.total || 0,
-                };
-                const files = Object.values(dlFilesRef.current);
-                const totalLoaded = files.reduce((s, f) => s + f.loaded, 0);
-                const totalSize = files.reduce((s, f) => s + f.total, 0);
-                if (totalSize > 0) {
-                  const pct = Math.min(Math.round((totalLoaded / totalSize) * 100), 95);
-                  setProgress(pct);
-                  setStatus(`Baixando modelo… ${pct}%`);
+      if (type === "loading") {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  status: "loading",
+                  progress: 0,
+                  statusMsg: "Baixando modelo…",
                 }
-              }
-            },
-          },
+              : item,
+          ),
+        );
+      } else if (type === "download_progress") {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  progress: payload,
+                  statusMsg: `Baixando modelo… ${payload}%`,
+                }
+              : item,
+          ),
+        );
+      } else if (type === "transcribing") {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  status: "transcribing",
+                  progress: 0,
+                  statusMsg: isVideo(item.file)
+                    ? "Transcrevendo vídeo…"
+                    : "Transcrevendo áudio…",
+                }
+              : item,
+          ),
+        );
+      } else if (type === "trans_progress") {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === id ? { ...item, progress: payload } : item,
+          ),
+        );
+      } else if (type === "result") {
+        const text =
+          payload.text?.trim() ||
+          payload.chunks
+            ?.map((c) => c.text)
+            .join(" ")
+            .trim() ||
+          "";
+        const chunks = payload.chunks || [];
+        setQueue((q) => {
+          const updated = q.map((item) =>
+            item.id === id
+              ? { ...item, status: "done", transcript: text, chunks, progress: 100 }
+              : item,
+          );
+          setTimeout(() => startNext(updated), 0);
+          return updated;
+        });
+      } else if (type === "error") {
+        setQueue((q) => {
+          const updated = q.map((item) =>
+            item.id === id
+              ? { ...item, status: "error", error: payload }
+              : item,
+          );
+          setTimeout(() => startNext(updated), 0);
+          return updated;
+        });
+      }
+    };
+
+    workerRef.current = worker;
+    return () => worker.terminate();
+  }, [startNext]);
+
+  // ── Elapsed timer ──
+  useEffect(() => {
+    if (!isProcessing) return;
+    const timer = setInterval(() => {
+      if (processingIdRef.current) {
+        setQueue((q) =>
+          q.map((item) =>
+            item.id === processingIdRef.current
+              ? { ...item, elapsed: (item.elapsed || 0) + 1 }
+              : item,
+          ),
         );
       }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isProcessing]);
 
-      setPhase("transcribing");
-      setProgress(0);
-      setStatus(isVideo(file) ? "Transcrevendo vídeo…" : "Transcrevendo áudio…");
+  // ── Add files to queue ──
+  const addFiles = useCallback((fileList) => {
+    if (!fileList?.length) return;
+    const newItems = Array.from(fileList).map((f) => {
+      const url = URL.createObjectURL(f);
+      const id = mkId();
+      const sizeWarning =
+        (isVideo(f) && f.size > 1_073_741_824) ||
+        (!isVideo(f) && f.size > 209_715_200)
+          ? `Arquivo grande (${fmtSize(f.size)}) — pode ser lento ou falhar.`
+          : null;
 
-      const url = URL.createObjectURL(file);
-      const opts = {
-        chunk_length_s: 28,
-        stride_length_s: 6,
-        // return_timestamps evita loops de alucinação em áudios longos
-        return_timestamps: true,
-        // impede que o modelo repita o mesmo trecho
-        no_repeat_ngram_size: 3,
+      const item = {
+        id,
+        file: f,
+        url,
+        duration: 0,
+        status: "idle",
+        progress: 0,
+        elapsed: 0,
+        transcript: "",
+        chunks: [],
+        error: null,
+        statusMsg: "",
+        sizeWarning,
       };
-      if (lang !== "auto") opts.language = lang;
-      const result = await whisperRef.current(url, opts);
-      URL.revokeObjectURL(url);
 
-      // result.text ou result.chunks[].text dependendo do modo
-      const text =
-        result.text?.trim() ||
-        result.chunks?.map((c) => c.text).join(" ").trim() ||
-        "";
-      setTranscript(text);
-      setPhase("done");
-    } catch (err) {
-      console.error("Transcription error:", err);
-      setStatus("Erro: " + (err.message || String(err)));
-      setPhase("error");
+      const a = new Audio(url);
+      a.addEventListener("loadedmetadata", () => {
+        setQueue((q) =>
+          q.map((i) => (i.id === id ? { ...i, duration: a.duration } : i)),
+        );
+      });
+
+      return item;
+    });
+
+    setQueue((q) => [...q, ...newItems]);
+  }, []);
+
+  const removeItem = useCallback((id) => {
+    if (processingIdRef.current === id) return;
+    setQueue((q) => {
+      const item = q.find((i) => i.id === id);
+      if (item) URL.revokeObjectURL(item.url);
+      return q.filter((i) => i.id !== id);
+    });
+    setPlayingIds((p) => {
+      const n = { ...p };
+      delete n[id];
+      return n;
+    });
+    setCurTimes((c) => {
+      const n = { ...c };
+      delete n[id];
+      return n;
+    });
+    delete audioRefsMap.current[id];
+  }, []);
+
+  const startAll = useCallback(() => {
+    setQueue((q) => {
+      setTimeout(() => startNext(q), 0);
+      return q;
+    });
+  }, [startNext]);
+
+  const retryItem = useCallback(
+    (id) => {
+      setQueue((q) => {
+        const updated = q.map((i) =>
+          i.id === id
+            ? { ...i, status: "idle", error: null, progress: 0, elapsed: 0 }
+            : i,
+        );
+        setTimeout(() => startNext(updated), 0);
+        return updated;
+      });
+    },
+    [startNext],
+  );
+
+  const togglePlay = useCallback((id) => {
+    const el = audioRefsMap.current[id];
+    if (!el) return;
+    if (el.paused) {
+      el.play();
+      setPlayingIds((p) => ({ ...p, [id]: true }));
+    } else {
+      el.pause();
+      setPlayingIds((p) => ({ ...p, [id]: false }));
     }
-  };
+  }, []);
 
-  const copy = () => {
-    navigator.clipboard.writeText(transcript);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const seek = useCallback((id, e) => {
+    const el = audioRefsMap.current[id];
+    const item = queueRef.current.find((i) => i.id === id);
+    if (!el || !item?.duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    el.currentTime =
+      Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) *
+      item.duration;
+  }, []);
 
-  const download = () => {
-    const blob = new Blob([transcript], { type: "text/plain" });
+  const copyTranscript = useCallback((id) => {
+    const item = queueRef.current.find((i) => i.id === id);
+    if (!item) return;
+    navigator.clipboard.writeText(item.transcript);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
+  }, []);
+
+  const downloadTxt = useCallback((id) => {
+    const item = queueRef.current.find((i) => i.id === id);
+    if (!item) return;
+    const blob = new Blob([item.transcript], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download =
-      (file?.name?.replace(/\.[^.]+$/, "") || "transcricao") + ".txt";
+      (item.file.name.replace(/\.[^.]+$/, "") || "transcricao") + ".txt";
     a.click();
-  };
+  }, []);
 
-  const busy = phase === "loading" || phase === "transcribing";
-  const pct = duration > 0 ? (curTime / duration) * 100 : 0;
+  const downloadSrt = useCallback((id) => {
+    const item = queueRef.current.find((i) => i.id === id);
+    if (!item?.chunks?.length) return;
+    const lines = item.chunks
+      .filter((c) => c.timestamp?.[0] != null)
+      .map((c, i) => {
+        const start = fmtSRT(c.timestamp[0]);
+        const end = fmtSRT(
+          Math.max(
+            c.timestamp[0] + 0.5,
+            c.timestamp[1] ?? c.timestamp[0] + 3,
+          ),
+        );
+        return `${i + 1}\n${start} --> ${end}\n${c.text.trim()}\n`;
+      })
+      .join("\n");
+    const blob = new Blob([lines], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download =
+      (item.file.name.replace(/\.[^.]+$/, "") || "legenda") + ".srt";
+    a.click();
+  }, []);
 
-  const langBtn = (active) => ({
+  // ── Derived state ──
+  const idleItems = queue.filter((i) => i.status === "idle");
+  const hasIdle = idleItems.length > 0;
+
+  const transcribeLabel =
+    idleItems.length > 1
+      ? `⚡ Transcrever todos (${idleItems.length} arquivos)`
+      : idleItems.length === 1
+        ? isVideo(idleItems[0]?.file)
+          ? "⚡ Transcrever vídeo"
+          : "⚡ Transcrever áudio"
+        : "";
+
+  // ── Style helpers ──
+  const toggleBtn = (active, disabled) => ({
     background: active ? t.accent : "transparent",
     color: active ? "#fff" : t.text2,
     border: `1.5px solid ${active ? t.accent : t.border}`,
@@ -251,9 +427,10 @@ export default function App() {
     padding: "7px 14px",
     fontSize: "0.78rem",
     fontWeight: active ? 700 : 500,
-    cursor: "pointer",
+    cursor: disabled ? "default" : "pointer",
     fontFamily: "inherit",
     transition: "all 0.2s",
+    opacity: disabled ? 0.5 : 1,
   });
 
   const actionBtn = (hl) => ({
@@ -268,6 +445,20 @@ export default function App() {
     fontFamily: "inherit",
     transition: "all 0.2s",
   });
+
+  const stepBadge = {
+    background: t.accentGlow,
+    color: t.accent,
+    fontWeight: 800,
+    fontSize: "0.72rem",
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  };
 
   return (
     <div
@@ -305,11 +496,7 @@ export default function App() {
           <img
             src={LOGO}
             alt="Guebly"
-            style={{
-              height: 36,
-              width: 36,
-              objectFit: "contain",
-            }}
+            style={{ height: 36, width: 36, objectFit: "contain" }}
           />
           <span
             style={{
@@ -405,9 +592,9 @@ export default function App() {
             margin: "0 auto",
           }}
         >
-          Transcreva áudios do
+          Transcreva áudios e vídeos
           <br />
-          WhatsApp <span style={{ color: t.accent }}>direto no navegador</span>
+          <span style={{ color: t.accent }}>direto no navegador</span>
         </h1>
 
         <p
@@ -415,22 +602,17 @@ export default function App() {
             color: t.text2,
             fontSize: "1rem",
             lineHeight: 1.6,
-            marginTop: 16,
             maxWidth: 660,
             margin: "16px auto 0",
           }}
         >
           Nenhum dado é enviado para servidores. O modelo de IA roda localmente
-          no seu dispositivo. Suporta áudios longos de 3+ minutos.
+          no seu dispositivo. Suporta vários arquivos de uma vez.
         </p>
 
         <div
           className="hero-stats"
-          style={{
-            color: t.text3,
-            fontSize: "0.78rem",
-            fontWeight: 500,
-          }}
+          style={{ color: t.text3, fontSize: "0.78rem", fontWeight: 500 }}
         >
           {["🔒 100% privado", "⚡ Sem cadastro", "🌐 Multi-idioma"].map(
             (item) => (
@@ -441,404 +623,638 @@ export default function App() {
       </div>
 
       {/* ═══ MAIN CONTENT ═══ */}
-      <div
-        className="app-main"
-        style={{
-          maxWidth: 760,
-          margin: "0 auto",
-        }}
-      >
-        {/* ── LANGUAGE SELECTOR ── */}
+      <div className="app-main" style={{ maxWidth: 760, margin: "0 auto" }}>
+
+        {/* ── SETTINGS ROW ── */}
         <div
           style={{
             display: "flex",
-            alignItems: "center",
-            gap: 8,
+            gap: 20,
             marginBottom: 20,
             flexWrap: "wrap",
           }}
         >
-          <span
-            style={{
-              fontSize: "0.8rem",
-              color: t.text2,
-              fontWeight: 600,
-              marginRight: 4,
-            }}
-          >
-            Idioma do áudio:
-          </span>
-          {LANGS.map(({ v, l }) => (
-            <button
-              key={v}
-              onClick={() => setLang(v)}
-              style={langBtn(lang === v)}
+          {/* Language */}
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: t.text2,
+                fontWeight: 600,
+                display: "block",
+                marginBottom: 8,
+              }}
             >
-              {l}
-            </button>
-          ))}
+              Idioma do áudio/vídeo:
+            </span>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {LANGS.map(({ v, l }) => (
+                <button
+                  key={v}
+                  onClick={() => setLang(v)}
+                  disabled={isProcessing}
+                  style={toggleBtn(lang === v, isProcessing)}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Model */}
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <span
+              style={{
+                fontSize: "0.8rem",
+                color: t.text2,
+                fontWeight: 600,
+                display: "block",
+                marginBottom: 8,
+              }}
+            >
+              Modelo Whisper:
+            </span>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {MODELS.map(({ v, l, desc }) => (
+                <button
+                  key={v}
+                  onClick={() => setModel(v)}
+                  disabled={isProcessing}
+                  style={toggleBtn(model === v, isProcessing)}
+                  title={desc}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
         {/* ── DROPZONE ── */}
-        {!file && (
-          <div
-            onClick={() => fileRef.current?.click()}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
+        <div
+          onClick={() => fileRef.current?.click()}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragOver(false);
+            addFiles(e.dataTransfer.files);
+          }}
+          style={{
+            border: `2px dashed ${dragOver ? t.accent : t.border}`,
+            borderRadius: queue.length > 0 ? 12 : 20,
+            padding: queue.length > 0 ? "0.85rem 1.5rem" : "3rem 2.5rem",
+            textAlign: "center",
+            cursor: "pointer",
+            background: dragOver
+              ? t.accentGlow
+              : queue.length > 0
+                ? "transparent"
+                : t.card,
+            transition: "all 0.3s",
+            boxShadow: queue.length > 0 ? "none" : t.shadow,
+            marginBottom: 16,
+          }}
+        >
+          {queue.length === 0 ? (
+            <>
+              <div
+                style={{
+                  fontSize: 56,
+                  marginBottom: 16,
+                  animation: dragOver ? "float 0.6s ease infinite" : "none",
+                }}
+              >
+                {dragOver ? "📥" : "🎤"}
+              </div>
+              <p
+                style={{
+                  fontWeight: 700,
+                  fontSize: "1.1rem",
+                  marginBottom: 8,
+                }}
+              >
+                Arraste o áudio ou vídeo aqui
+              </p>
+              <p
+                style={{
+                  color: t.text2,
+                  fontSize: "0.85rem",
+                  marginBottom: 16,
+                }}
+              >
+                ou clique para selecionar — múltiplos arquivos suportados
+              </p>
+              <div
+                style={{
+                  display: "inline-flex",
+                  gap: 6,
+                  flexWrap: "wrap",
+                  justifyContent: "center",
+                  maxWidth: 440,
+                }}
+              >
+                {[
+                  ".ogg",
+                  ".opus",
+                  ".mp3",
+                  ".m4a",
+                  ".wav",
+                  ".webm",
+                  ".mp4",
+                  ".mov",
+                  ".avi",
+                  ".mkv",
+                ].map((ext) => (
+                  <span
+                    key={ext}
+                    style={{
+                      background: t.accentSoft,
+                      color: t.text2,
+                      fontSize: "0.7rem",
+                      fontWeight: 600,
+                      padding: "3px 8px",
+                      borderRadius: 5,
+                    }}
+                  >
+                    {ext}
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <span
+              style={{ fontSize: "0.82rem", color: t.text2, fontWeight: 600 }}
+            >
+              {dragOver ? "📥 Soltar aqui" : "+ Adicionar mais arquivos"}
+            </span>
+          )}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="audio/*,video/*,.ogg,.opus,.mp3,.m4a,.wav,.webm,.mp4,.mov,.avi,.mkv"
+            multiple
+            style={{ display: "none" }}
+            onChange={(e) => {
+              addFiles(e.target.files);
+              e.target.value = "";
             }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOver(false);
-              onFile(e.dataTransfer.files[0]);
-            }}
-            style={{
-              border: `2px dashed ${dragOver ? t.accent : t.border}`,
-              borderRadius: 20,
-              padding: "3rem 2.5rem",
-              textAlign: "center",
-              cursor: "pointer",
-              background: dragOver ? t.accentGlow : t.card,
-              transition: "all 0.3s",
-              boxShadow: t.shadow,
-            }}
-          >
+          />
+        </div>
+
+        {/* ── QUEUE ── */}
+        {queue.map((item) => {
+          const itemBusy =
+            item.status === "loading" || item.status === "transcribing";
+          const playPct =
+            item.duration > 0
+              ? ((curTimes[item.id] || 0) / item.duration) * 100
+              : 0;
+          const isPlaying = !!playingIds[item.id];
+          const isCurrentlyProcessing = processingIdRef.current === item.id;
+          const hasSrt = item.chunks?.some((c) => c.timestamp?.[0] != null);
+
+          return (
             <div
+              key={item.id}
               style={{
-                fontSize: 56,
                 marginBottom: 16,
-                animation: dragOver ? "float 0.6s ease infinite" : "none",
+                background: t.card,
+                border: `1.5px solid ${
+                  item.status === "done"
+                    ? t.accent + "40"
+                    : item.status === "error"
+                      ? t.errBd
+                      : t.cardBorder
+                }`,
+                borderRadius: 18,
+                overflow: "hidden",
+                boxShadow: t.shadow,
               }}
             >
-              {dragOver ? "📥" : "🎤"}
-            </div>
-            <p style={{ fontWeight: 700, fontSize: "1.1rem", marginBottom: 8 }}>
-              Arraste o áudio ou vídeo aqui
-            </p>
-            <p
-              style={{ color: t.text2, fontSize: "0.85rem", marginBottom: 16 }}
-            >
-              ou clique para selecionar um arquivo
-            </p>
-            <div
-              style={{
-                display: "inline-flex",
-                gap: 6,
-                flexWrap: "wrap",
-                justifyContent: "center",
-                maxWidth: 420,
-                margin: "0 auto",
-              }}
-            >
-              {[".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".mp4", ".mov", ".avi", ".mkv"].map((ext) => (
+              {/* File info row */}
+              <div
+                style={{
+                  padding: "1.1rem 1.3rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                }}
+              >
+                <div
+                  style={{
+                    width: 48,
+                    height: 48,
+                    background: t.accentGlow,
+                    borderRadius: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 22,
+                    flexShrink: 0,
+                  }}
+                >
+                  {isVideo(item.file) ? "🎬" : "🎵"}
+                </div>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontWeight: 700,
+                      fontSize: "0.9rem",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {item.file.name}
+                  </div>
+                  <div
+                    style={{
+                      color: t.text2,
+                      fontSize: "0.76rem",
+                      marginTop: 2,
+                    }}
+                  >
+                    {fmtSize(item.file.size)}
+                    {item.duration > 0 && ` · ${fmtDur(item.duration)}`}
+                  </div>
+                  {item.sizeWarning && (
+                    <div
+                      style={{
+                        color: t.warnColor,
+                        fontSize: "0.7rem",
+                        marginTop: 2,
+                      }}
+                    >
+                      ⚠️ {item.sizeWarning}
+                    </div>
+                  )}
+                </div>
+
+                {/* Status */}
+                <div
+                  style={{
+                    flexShrink: 0,
+                    textAlign: "right",
+                    minWidth: 0,
+                    maxWidth: 160,
+                  }}
+                >
+                  {item.status === "idle" && (
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: t.text3,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Aguardando
+                    </span>
+                  )}
+                  {itemBusy && (
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: t.accent,
+                        fontWeight: 600,
+                        display: "block",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {item.statusMsg || "Processando…"}
+                      {item.progress > 0 && item.status === "loading"
+                        ? ""
+                        : ` (${item.elapsed}s)`}
+                    </span>
+                  )}
+                  {item.status === "done" && (
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: t.accent,
+                        fontWeight: 700,
+                      }}
+                    >
+                      ✅ {item.elapsed}s
+                    </span>
+                  )}
+                  {item.status === "error" && (
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: "#ef4444",
+                        fontWeight: 600,
+                      }}
+                    >
+                      ❌ Erro
+                    </span>
+                  )}
+                </div>
+
+                {/* Play/pause */}
+                <button
+                  onClick={() => togglePlay(item.id)}
+                  style={{
+                    background: isPlaying ? t.accent : "transparent",
+                    border: `1.5px solid ${isPlaying ? t.accent : t.border}`,
+                    color: isPlaying ? "#fff" : t.text,
+                    borderRadius: 12,
+                    width: 42,
+                    height: 42,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: "pointer",
+                    fontSize: 16,
+                    flexShrink: 0,
+                    transition: "all 0.2s",
+                  }}
+                >
+                  {isPlaying ? "⏸" : "▶"}
+                </button>
+
+                {/* Remove */}
+                <button
+                  onClick={() => removeItem(item.id)}
+                  disabled={isCurrentlyProcessing}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: t.text3,
+                    cursor: isCurrentlyProcessing ? "default" : "pointer",
+                    fontSize: 20,
+                    padding: 4,
+                    flexShrink: 0,
+                    opacity: isCurrentlyProcessing ? 0.3 : 1,
+                  }}
+                >
+                  ✕
+                </button>
+
+                <audio
+                  ref={(el) => {
+                    if (el) audioRefsMap.current[item.id] = el;
+                  }}
+                  src={item.url}
+                  onEnded={() =>
+                    setPlayingIds((p) => ({ ...p, [item.id]: false }))
+                  }
+                  onTimeUpdate={(e) =>
+                    setCurTimes((c) => ({
+                      ...c,
+                      [item.id]: e.target.currentTime,
+                    }))
+                  }
+                />
+              </div>
+
+              {/* Seek bar */}
+              <div
+                style={{
+                  padding: "0 1.3rem 1rem",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
                 <span
-                  key={ext}
                   style={{
-                    background: t.accentSoft,
-                    color: t.text2,
-                    fontSize: "0.7rem",
-                    fontWeight: 600,
-                    padding: "3px 8px",
-                    borderRadius: 5,
+                    fontSize: "0.68rem",
+                    color: t.text3,
+                    fontVariantNumeric: "tabular-nums",
+                    minWidth: 32,
+                    textAlign: "right",
                   }}
                 >
-                  {ext}
+                  {fmtDur(curTimes[item.id] || 0)}
                 </span>
-              ))}
-            </div>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="audio/*,video/*,.ogg,.opus,.mp3,.m4a,.wav,.webm,.mp4,.mov,.avi,.mkv"
-              style={{ display: "none" }}
-              onChange={(e) => onFile(e.target.files?.[0])}
-            />
-          </div>
-        )}
-
-        {/* ── FILE CARD ── */}
-        {file && (
-          <div
-            style={{
-              background: t.card,
-              border: `1.5px solid ${t.cardBorder}`,
-              borderRadius: 18,
-              overflow: "hidden",
-              boxShadow: t.shadow,
-            }}
-          >
-            {/* File info */}
-            <div
-              style={{
-                padding: "1.1rem 1.3rem",
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-              }}
-            >
-              <div
-                style={{
-                  width: 48,
-                  height: 48,
-                  background: t.accentGlow,
-                  borderRadius: 14,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 22,
-                  flexShrink: 0,
-                }}
-              >
-                {isVideo(file) ? "🎬" : "🎵"}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
                 <div
+                  onClick={(e) => seek(item.id, e)}
                   style={{
-                    fontWeight: 700,
-                    fontSize: "0.9rem",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                  }}
-                >
-                  {file.name}
-                </div>
-                <div
-                  style={{ color: t.text2, fontSize: "0.76rem", marginTop: 3 }}
-                >
-                  {fmtSize(file.size)}
-                  {duration > 0 && ` · ${fmtDur(duration)}`}
-                </div>
-              </div>
-              <button
-                onClick={togglePlay}
-                style={{
-                  background: playing ? t.accent : "transparent",
-                  border: `1.5px solid ${playing ? t.accent : t.border}`,
-                  color: playing ? "#fff" : t.text,
-                  borderRadius: 12,
-                  width: 42,
-                  height: 42,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  cursor: "pointer",
-                  fontSize: 16,
-                  flexShrink: 0,
-                  transition: "all 0.2s",
-                }}
-              >
-                {playing ? "⏸" : "▶"}
-              </button>
-              <button
-                onClick={remove}
-                style={{
-                  background: "none",
-                  border: "none",
-                  color: t.text3,
-                  cursor: "pointer",
-                  fontSize: 20,
-                  padding: 4,
-                  flexShrink: 0,
-                }}
-              >
-                ✕
-              </button>
-              <audio
-                ref={audioRef}
-                src={audioUrl}
-                onEnded={() => setPlaying(false)}
-              />
-            </div>
-
-            {/* Seek bar */}
-            <div
-              style={{
-                padding: "0 1.3rem 1rem",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: "0.68rem",
-                  color: t.text3,
-                  fontVariantNumeric: "tabular-nums",
-                  minWidth: 32,
-                  textAlign: "right",
-                }}
-              >
-                {fmtDur(curTime)}
-              </span>
-              <div
-                onClick={seek}
-                style={{
-                  flex: 1,
-                  height: 8,
-                  background: t.surface2,
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  overflow: "hidden",
-                  position: "relative",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    background: t.accent,
+                    flex: 1,
+                    height: 8,
+                    background: t.surface2,
                     borderRadius: 4,
-                    width: `${pct}%`,
-                    transition: "width 0.15s",
+                    cursor: "pointer",
+                    overflow: "hidden",
                   }}
-                />
-              </div>
-              <span
-                style={{
-                  fontSize: "0.68rem",
-                  color: t.text3,
-                  fontVariantNumeric: "tabular-nums",
-                  minWidth: 32,
-                }}
-              >
-                {fmtDur(duration)}
-              </span>
-            </div>
-
-            {/* Divider */}
-            <div style={{ height: 1, background: t.border }} />
-
-            {/* CTA */}
-            {phase !== "done" && (
-              <button
-                onClick={transcribe}
-                disabled={busy}
-                style={{
-                  width: "100%",
-                  padding: "1rem",
-                  background: busy ? "transparent" : t.accent,
-                  color: busy ? t.accent : "#fff",
-                  border: "none",
-                  fontSize: "0.95rem",
-                  fontWeight: 700,
-                  cursor: busy ? "default" : "pointer",
-                  fontFamily: "inherit",
-                  transition: "all 0.2s",
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {phase === "idle" || phase === "error"
-                  ? (isVideo(file) ? "⚡ Transcrever vídeo" : "⚡ Transcrever áudio")
-                  : `${status} (${elapsed}s)`}
-              </button>
-            )}
-
-            {busy && (
-              <div style={{ height: 4, background: t.bg }}>
-                <div
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      background: t.accent,
+                      borderRadius: 4,
+                      width: `${playPct}%`,
+                      transition: "width 0.15s",
+                    }}
+                  />
+                </div>
+                <span
                   style={{
-                    height: "100%",
-                    width: phase === "transcribing" ? "100%" : `${progress}%`,
-                    background: t.accent,
-                    transition: "width 0.4s",
-                    animation:
-                      phase === "transcribing" ? "pulse 1.5s infinite" : "none",
-                    borderRadius: 2,
+                    fontSize: "0.68rem",
+                    color: t.text3,
+                    fontVariantNumeric: "tabular-nums",
+                    minWidth: 32,
                   }}
-                />
+                >
+                  {fmtDur(item.duration)}
+                </span>
               </div>
-            )}
-          </div>
-        )}
 
-        {/* ── ERROR ── */}
-        {phase === "error" && (
-          <div
+              <div style={{ height: 1, background: t.border }} />
+
+              {/* Download progress bar */}
+              {itemBusy && (
+                <div style={{ height: 4, background: t.bg2 }}>
+                  <div
+                    style={{
+                      height: "100%",
+                      width:
+                        item.status === "transcribing" && item.progress === 0
+                          ? "100%"
+                          : `${item.progress}%`,
+                      background: t.accent,
+                      transition: item.progress > 0 ? "width 0.5s" : "none",
+                      animation:
+                        item.status === "transcribing" && item.progress === 0
+                          ? "pulse 1.5s infinite"
+                          : "none",
+                      borderRadius: 2,
+                    }}
+                  />
+                </div>
+              )}
+
+              {/* Error state */}
+              {item.status === "error" && (
+                <div>
+                  <div
+                    style={{
+                      padding: "0.75rem 1.3rem",
+                      background: t.errBg,
+                      borderTop: `1px solid ${t.errBd}`,
+                      fontSize: "0.82rem",
+                      color: "#ef4444",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 12,
+                    }}
+                  >
+                    <span style={{ flex: 1, minWidth: 0, wordBreak: "break-word" }}>
+                      {item.error}
+                    </span>
+                    <button
+                      onClick={() => retryItem(item.id)}
+                      disabled={isProcessing}
+                      style={{
+                        background: "transparent",
+                        border: "1.5px solid #ef4444",
+                        color: "#ef4444",
+                        borderRadius: 8,
+                        padding: "5px 12px",
+                        fontSize: "0.74rem",
+                        fontWeight: 600,
+                        cursor: isProcessing ? "default" : "pointer",
+                        fontFamily: "inherit",
+                        flexShrink: 0,
+                        opacity: isProcessing ? 0.5 : 1,
+                      }}
+                    >
+                      🔄 Tentar novamente
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Result */}
+              {item.status === "done" && item.transcript && (
+                <div>
+                  {/* Actions */}
+                  <div
+                    style={{
+                      padding: "0.85rem 1.3rem",
+                      borderTop: `1px solid ${t.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 8,
+                    }}
+                  >
+                    <button
+                      onClick={() => setShowTimestamps((s) => !s)}
+                      style={actionBtn(showTimestamps)}
+                    >
+                      🕐 {showTimestamps ? "Com timestamps" : "Ver timestamps"}
+                    </button>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() => copyTranscript(item.id)}
+                        style={actionBtn(copiedId === item.id)}
+                      >
+                        {copiedId === item.id ? "✓ Copiado" : "📋 Copiar"}
+                      </button>
+                      <button
+                        onClick={() => downloadTxt(item.id)}
+                        style={actionBtn(false)}
+                      >
+                        💾 .txt
+                      </button>
+                      {hasSrt && (
+                        <button
+                          onClick={() => downloadSrt(item.id)}
+                          style={actionBtn(false)}
+                        >
+                          🎬 .srt
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Transcript content */}
+                  <div
+                    style={{
+                      padding: "1.3rem",
+                      fontSize: "0.92rem",
+                      lineHeight: 1.8,
+                      maxHeight: 400,
+                      overflowY: "auto",
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {showTimestamps && item.chunks?.length > 0
+                      ? item.chunks.map((c, i) => (
+                          <span key={i}>
+                            {c.timestamp?.[0] != null && (
+                              <span
+                                style={{
+                                  color: t.text3,
+                                  fontSize: "0.72rem",
+                                  fontVariantNumeric: "tabular-nums",
+                                  userSelect: "none",
+                                }}
+                              >
+                                [{fmtDur(c.timestamp[0])}]{" "}
+                              </span>
+                            )}
+                            {c.text}
+                          </span>
+                        ))
+                      : item.transcript}
+                  </div>
+
+                  {/* Stats */}
+                  <div
+                    className="result-stats"
+                    style={{
+                      padding: "0.7rem 1.3rem",
+                      borderTop: `1px solid ${t.border}`,
+                      fontSize: "0.72rem",
+                      color: t.text2,
+                      fontWeight: 500,
+                    }}
+                  >
+                    <span>📝 {wc(item.transcript)} palavras</span>
+                    <span>🔤 {item.transcript.length} caracteres</span>
+                    <span>
+                      ⏱ ~{Math.ceil(wc(item.transcript) / 200)} min leitura
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {/* ── TRANSCRIBE ALL BUTTON ── */}
+        {hasIdle && !isProcessing && (
+          <button
+            onClick={startAll}
             style={{
-              marginTop: 16,
-              padding: "1rem 1.2rem",
-              background: t.errBg,
-              border: `1px solid ${t.errBd}`,
-              borderRadius: 12,
-              fontSize: "0.84rem",
-              color: "#ef4444",
+              width: "100%",
+              padding: "1rem",
+              background: t.accent,
+              color: "#fff",
+              border: "none",
+              borderRadius: 14,
+              fontSize: "1rem",
+              fontWeight: 700,
+              cursor: "pointer",
+              fontFamily: "inherit",
+              marginBottom: 16,
+              transition: "all 0.2s",
+              letterSpacing: "-0.01em",
             }}
           >
-            {status}
-          </div>
-        )}
-
-        {/* ── RESULT ── */}
-        {phase === "done" && transcript && (
-          <div
-            style={{
-              marginTop: 16,
-              background: t.card,
-              border: `1.5px solid ${t.accent}40`,
-              borderRadius: 18,
-              overflow: "hidden",
-              boxShadow: `${t.shadow}, 0 0 20px ${t.accentSoft}`,
-            }}
-          >
-            <div
-              style={{
-                padding: "0.85rem 1.3rem",
-                borderBottom: `1px solid ${t.border}`,
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                flexWrap: "wrap",
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: "0.72rem",
-                  fontWeight: 700,
-                  color: t.accent,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.08em",
-                }}
-              >
-                ✅ Transcrição completa · {elapsed}s
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={copy} style={actionBtn(copied)}>
-                  {copied ? "✓ Copiado" : "📋 Copiar"}
-                </button>
-                <button onClick={download} style={actionBtn(false)}>
-                  💾 Baixar .txt
-                </button>
-              </div>
-            </div>
-            <div
-              style={{
-                padding: "1.3rem",
-                fontSize: "0.92rem",
-                lineHeight: 1.8,
-                maxHeight: 400,
-                overflowY: "auto",
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {transcript}
-            </div>
-            <div
-              className="result-stats"
-              style={{
-                padding: "0.7rem 1.3rem",
-                borderTop: `1px solid ${t.border}`,
-                fontSize: "0.72rem",
-                color: t.text2,
-                fontWeight: 500,
-              }}
-            >
-              <span>📝 {wc(transcript)} palavras</span>
-              <span>🔤 {transcript.length} caracteres</span>
-              <span>⏱ ~{Math.ceil(wc(transcript) / 200)} min leitura</span>
-            </div>
-          </div>
+            {transcribeLabel}
+          </button>
         )}
 
         {/* ── HOW TO ── */}
@@ -860,74 +1276,90 @@ export default function App() {
               fontSize: "0.88rem",
             }}
           >
-            📱 Como pegar o áudio do WhatsApp
+            📱 Como usar
           </div>
           <div style={{ padding: "1rem 1.3rem" }}>
-            <div
+            <p
               style={{
-                display: "flex",
-                gap: 12,
+                fontWeight: 700,
+                fontSize: "0.82rem",
+                color: t.text2,
                 marginBottom: 12,
-                alignItems: "flex-start",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
               }}
             >
-              <span
+              🎤 Áudio do WhatsApp
+            </p>
+
+            {[
+              {
+                title: "No celular",
+                desc: "Segure o áudio → Encaminhar → Salve no dispositivo ou envie para si mesmo → Baixe o arquivo",
+              },
+              {
+                title: "No WhatsApp Web",
+                desc: "Passe o mouse sobre o áudio → Clique na setinha → Download",
+              },
+            ].map((step, i) => (
+              <div
+                key={i}
                 style={{
-                  background: t.accentGlow,
-                  color: t.accent,
-                  fontWeight: 800,
-                  fontSize: "0.72rem",
-                  width: 24,
-                  height: 24,
-                  borderRadius: 8,
                   display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
+                  gap: 12,
+                  marginBottom: i === 0 ? 12 : 0,
+                  alignItems: "flex-start",
                 }}
               >
-                1
-              </span>
-              <div>
-                <p style={{ fontWeight: 600, fontSize: "0.84rem" }}>
-                  No celular
-                </p>
-                <p style={{ color: t.text2, fontSize: "0.8rem", marginTop: 2 }}>
-                  Segure o áudio → Encaminhar → Salve no dispositivo ou envie
-                  para si mesmo → Baixe o arquivo
-                </p>
+                <span style={stepBadge}>{i + 1}</span>
+                <div>
+                  <p style={{ fontWeight: 600, fontSize: "0.84rem" }}>
+                    {step.title}
+                  </p>
+                  <p
+                    style={{
+                      color: t.text2,
+                      fontSize: "0.8rem",
+                      marginTop: 2,
+                    }}
+                  >
+                    {step.desc}
+                  </p>
+                </div>
               </div>
-            </div>
+            ))}
+
             <div
               style={{
-                display: "flex",
-                gap: 12,
-                alignItems: "flex-start",
+                height: 1,
+                background: t.border,
+                margin: "16px 0",
+              }}
+            />
+
+            <p
+              style={{
+                fontWeight: 700,
+                fontSize: "0.82rem",
+                color: t.text2,
+                marginBottom: 12,
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
               }}
             >
-              <span
-                style={{
-                  background: t.accentGlow,
-                  color: t.accent,
-                  fontWeight: 800,
-                  fontSize: "0.72rem",
-                  width: 24,
-                  height: 24,
-                  borderRadius: 8,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                }}
-              >
-                2
-              </span>
+              🎬 Vídeo
+            </p>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+              <span style={stepBadge}>1</span>
               <div>
                 <p style={{ fontWeight: 600, fontSize: "0.84rem" }}>
-                  No WhatsApp Web
+                  Qualquer vídeo MP4, MOV, AVI, MKV
                 </p>
                 <p style={{ color: t.text2, fontSize: "0.8rem", marginTop: 2 }}>
-                  Passe o mouse sobre o áudio → Clique na setinha → Download
+                  Arraste o arquivo ou clique para selecionar. O áudio é
+                  extraído automaticamente pelo navegador para transcrição.
+                  Baixe o resultado como <strong>.txt</strong> ou{" "}
+                  <strong>.srt</strong> (legenda com timestamps).
                 </p>
               </div>
             </div>
@@ -988,10 +1420,7 @@ export default function App() {
             <img
               src={LOGO}
               alt="Guebly"
-              style={{
-                height: 22,
-                objectFit: "contain",
-              }}
+              style={{ height: 22, objectFit: "contain" }}
             />
             <a
               href="https://www.guebly.com.br"

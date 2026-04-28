@@ -12,6 +12,9 @@ export default defineConfig({
   build: {
     target: 'esnext',
   },
+  worker: {
+    format: 'es',
+  },
   // Impede que o Vite pré-bundle o transformers.js e quebre os caminhos do WASM
   optimizeDeps: {
     exclude: ['@huggingface/transformers'],
