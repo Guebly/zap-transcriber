@@ -14,6 +14,7 @@ const fmtSize = (b) =>
     ? (b / 1024).toFixed(1) + " KB"
     : (b / 1048576).toFixed(1) + " MB";
 const wc = (t) => t.trim().split(/\s+/).filter(Boolean).length;
+const isVideo = (f) => f?.type?.startsWith("video/") || /\.(mp4|mov|avi|mkv|webm)$/i.test(f?.name || "");
 
 const themes = {
   dark: {
@@ -89,6 +90,7 @@ export default function App() {
   const audioRef = useRef(null);
   const timerRef = useRef(null);
   const whisperRef = useRef(null);
+  const dlFilesRef = useRef({});
 
   useEffect(() => {
     // Só zera o elapsed quando começa do zero (fase loading), não quando vai pra transcribing
@@ -127,6 +129,7 @@ export default function App() {
     setPhase("idle");
     const url = URL.createObjectURL(f);
     setAudioUrl(url);
+    // Audio element works for both audio and video (extracts audio track)
     const a = new Audio(url);
     a.addEventListener("loadedmetadata", () => setDuration(a.duration));
   }, []);
@@ -163,16 +166,28 @@ export default function App() {
       setStatus("Baixando modelo Whisper (~150 MB)…");
 
       if (!whisperRef.current) {
+        dlFilesRef.current = {};
         whisperRef.current = await pipeline(
           "automatic-speech-recognition",
           "onnx-community/whisper-base",
           {
             dtype: "q8",
             progress_callback: (p) => {
-              if (p.status === "progress" && p.progress) {
-                const pct = Math.round(p.progress);
-                setProgress(Math.min(pct, 95));
-                setStatus(`Baixando modelo… ${pct}%`);
+              if (p.status === "initiate" && p.file) {
+                dlFilesRef.current[p.file] = { loaded: 0, total: 0 };
+              } else if (p.status === "progress" && p.file) {
+                dlFilesRef.current[p.file] = {
+                  loaded: p.loaded || 0,
+                  total: p.total || 0,
+                };
+                const files = Object.values(dlFilesRef.current);
+                const totalLoaded = files.reduce((s, f) => s + f.loaded, 0);
+                const totalSize = files.reduce((s, f) => s + f.total, 0);
+                if (totalSize > 0) {
+                  const pct = Math.min(Math.round((totalLoaded / totalSize) * 100), 95);
+                  setProgress(pct);
+                  setStatus(`Baixando modelo… ${pct}%`);
+                }
               }
             },
           },
@@ -181,7 +196,7 @@ export default function App() {
 
       setPhase("transcribing");
       setProgress(0);
-      setStatus("Transcrevendo áudio…");
+      setStatus(isVideo(file) ? "Transcrevendo vídeo…" : "Transcrevendo áudio…");
 
       const url = URL.createObjectURL(file);
       const opts = {
@@ -499,7 +514,7 @@ export default function App() {
               {dragOver ? "📥" : "🎤"}
             </div>
             <p style={{ fontWeight: 700, fontSize: "1.1rem", marginBottom: 8 }}>
-              Arraste o áudio aqui
+              Arraste o áudio ou vídeo aqui
             </p>
             <p
               style={{ color: t.text2, fontSize: "0.85rem", marginBottom: 16 }}
@@ -512,9 +527,11 @@ export default function App() {
                 gap: 6,
                 flexWrap: "wrap",
                 justifyContent: "center",
+                maxWidth: 420,
+                margin: "0 auto",
               }}
             >
-              {[".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm"].map((ext) => (
+              {[".ogg", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".mp4", ".mov", ".avi", ".mkv"].map((ext) => (
                 <span
                   key={ext}
                   style={{
@@ -533,7 +550,7 @@ export default function App() {
             <input
               ref={fileRef}
               type="file"
-              accept="audio/*,.ogg,.opus,.mp3,.m4a,.wav,.webm"
+              accept="audio/*,video/*,.ogg,.opus,.mp3,.m4a,.wav,.webm,.mp4,.mov,.avi,.mkv"
               style={{ display: "none" }}
               onChange={(e) => onFile(e.target.files?.[0])}
             />
@@ -573,7 +590,7 @@ export default function App() {
                   flexShrink: 0,
                 }}
               >
-                🎵
+                {isVideo(file) ? "🎬" : "🎵"}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div
@@ -712,7 +729,7 @@ export default function App() {
                 }}
               >
                 {phase === "idle" || phase === "error"
-                  ? "⚡ Transcrever áudio"
+                  ? (isVideo(file) ? "⚡ Transcrever vídeo" : "⚡ Transcrever áudio")
                   : `${status} (${elapsed}s)`}
               </button>
             )}
