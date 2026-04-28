@@ -120,51 +120,78 @@ export default function App() {
 
   // ── Decode audio/video file → mono Float32Array at 16 kHz ──
   // AudioContext is not available in Web Workers, so decoding happens here.
-  // Fast path: decodeAudioData() (works for all audio formats + MP4/AAC).
-  // Fallback: MediaElement + ScriptProcessorNode (real-time, for other video containers).
+  //
+  // Path A (fast): AudioContext at native rate → OfflineAudioContext resample to 16 kHz.
+  //   Works for all formats the browser can decode (audio + MP4/AAC).
+  //
+  // Path B (fallback): MediaElementSource + ScriptProcessorNode (real-time capture).
+  //   Triggered when Path A fails (unusual codecs, some video containers).
+  //   Uses <audio> for audio files, <video> for video. Takes as long as the media duration.
   const decodeFile = useCallback(async (item, onFallback) => {
-    const SR = 16000;
+    const TARGET_SR = 16000;
 
-    const toMono = (decoded) => {
-      if (decoded.numberOfChannels === 1) return decoded.getChannelData(0).slice();
-      const a = decoded.getChannelData(0);
-      const b = decoded.getChannelData(1);
+    const toMono = (buf) => {
+      if (buf.numberOfChannels === 1) return buf.getChannelData(0).slice();
+      const a = buf.getChannelData(0);
+      const b = buf.getChannelData(1);
       const out = new Float32Array(a.length);
       for (let i = 0; i < a.length; i++) out[i] = (a[i] + b[i]) / 2;
       return out;
     };
 
-    // Fast path
+    const resample = async (decoded) => {
+      if (decoded.sampleRate === TARGET_SR) return toMono(decoded);
+      const len = Math.ceil(decoded.duration * TARGET_SR);
+      const off = new OfflineAudioContext(1, len, TARGET_SR);
+      const src = off.createBufferSource();
+      src.buffer = decoded;
+      src.connect(off.destination);
+      src.start(0);
+      const rendered = await off.startRendering();
+      return rendered.getChannelData(0).slice();
+    };
+
+    // ── Path A: AudioContext.decodeAudioData ──
     try {
-      const buf = await item.file.arrayBuffer();
-      const ctx = new AudioContext({ sampleRate: SR });
+      const arrayBuf = await item.file.arrayBuffer();
+      // Use native sample rate — more compatible than forcing 16 kHz
+      const ctx = new AudioContext();
       let decoded;
       try {
-        decoded = await ctx.decodeAudioData(buf);
+        decoded = await ctx.decodeAudioData(arrayBuf);
       } finally {
         ctx.close();
       }
-      return { samples: toMono(decoded), duration: decoded.duration };
+      const samples = await resample(decoded);
+      return { samples, duration: decoded.duration };
     } catch (_) {
-      // Fast path failed — try MediaElement fallback (video containers)
+      // fall through to Path B
     }
 
+    // ── Path B: MediaElement real-time capture ──
     onFallback?.();
 
     return new Promise((resolve, reject) => {
-      const video = document.createElement("video");
-      video.src = item.url;
-      video.preload = "auto";
+      // Use <audio> for audio files — better codec support than <video>
+      const el = document.createElement(isVideo(item.file) ? "video" : "audio");
+      el.src = item.url;
+      el.preload = "auto";
+      el.crossOrigin = "anonymous";
 
-      video.addEventListener("error", () =>
-        reject(new Error("Formato de vídeo não suportado pelo navegador.")),
-      );
+      const onErr = () =>
+        reject(
+          new Error(
+            "Não foi possível decodificar o arquivo. " +
+            "Tente converter para MP3 ou MP4.",
+          ),
+        );
 
-      video.addEventListener("loadedmetadata", () => {
-        const duration = video.duration;
-        const ctx = new AudioContext({ sampleRate: SR });
-        const source = ctx.createMediaElementSource(video);
-        // eslint-disable-next-line no-undef
+      el.addEventListener("error", onErr);
+
+      el.addEventListener("loadedmetadata", () => {
+        const duration = el.duration;
+        const ctx = new AudioContext({ sampleRate: TARGET_SR });
+        const source = ctx.createMediaElementSource(el);
         const processor = ctx.createScriptProcessor(4096, 1, 1);
         const silencer = ctx.createGain();
         silencer.gain.value = 0;
@@ -178,7 +205,7 @@ export default function App() {
         processor.connect(silencer);
         silencer.connect(ctx.destination);
 
-        video.addEventListener("ended", () => {
+        el.addEventListener("ended", () => {
           processor.disconnect();
           silencer.disconnect();
           ctx.close();
@@ -189,7 +216,7 @@ export default function App() {
           resolve({ samples: out, duration });
         });
 
-        video.play().catch(reject);
+        el.play().catch(onErr);
       });
     });
   }, []);
