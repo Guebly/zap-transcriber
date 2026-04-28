@@ -152,52 +152,61 @@ export default function App() {
     };
 
     // ── Path A: AudioContext.decodeAudioData ──
-    // Only for audio files — video containers (MP4, MKV…) are not reliably
-    // supported by decodeAudioData and the whole file would be loaded into RAM.
-    if (!isVideo(item.file)) {
+    // Works for all audio formats and MP4/AAC video (Chrome supports it).
+    // Fails for some video containers (MKV, AVI) — falls through to Path B.
+    try {
+      const arrayBuf = await item.file.arrayBuffer();
+      if (arrayBuf.byteLength === 0) throw new Error("empty");
+      const ctx = new AudioContext(); // native sample rate — most compatible
+      let decoded;
       try {
-        const arrayBuf = await item.file.arrayBuffer();
-        const ctx = new AudioContext(); // native sample rate — more compatible
-        let decoded;
-        try {
-          decoded = await ctx.decodeAudioData(arrayBuf);
-        } finally {
-          ctx.close();
-        }
-        const samples = await resample(decoded);
-        return { samples, duration: decoded.duration };
-      } catch (_) {
-        // fall through to Path B
+        decoded = await ctx.decodeAudioData(arrayBuf);
+      } finally {
+        ctx.close();
       }
+      const samples = await resample(decoded);
+      return { samples, duration: decoded.duration };
+    } catch (_) {
+      // fall through to Path B
     }
 
     // ── Path B: MediaElement real-time capture ──
-    // Works for all formats the browser can play (audio + video).
-    // NOTE: blob URLs must NOT have crossOrigin set — they are same-origin
-    // and adding crossOrigin causes CORS errors (blob responses have no CORS headers).
+    // Works for any format the browser can play.
+    // Runs in real-time (a 2-min video takes ~2 min to extract).
+    // Requirements: el.muted=true (autoplay), el in DOM (reliable play), ctx.resume().
     onFallback?.();
 
     return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (fn) => { if (!done) { done = true; fn(); } };
+
       const el = document.createElement(isVideo(item.file) ? "video" : "audio");
       el.src = item.url;
       el.preload = "auto";
-      el.muted = true; // muted media bypasses autoplay policy (no user gesture needed)
+      el.muted = true;       // bypass autoplay policy — muted media plays without user gesture
+      el.style.display = "none";
+      document.body.appendChild(el);
 
-      const onErr = () =>
-        reject(
-          new Error(
-            "Não foi possível decodificar o arquivo. " +
-            "Tente converter para MP3 ou MP4.",
-          ),
-        );
+      const cleanup = (ctx) => {
+        try { document.body.removeChild(el); } catch (_) {}
+        ctx?.close();
+      };
 
-      el.addEventListener("error", onErr);
+      el.addEventListener("error", () => {
+        const code = el.error?.code ?? "?";
+        finish(() => {
+          cleanup(null);
+          reject(new Error(
+            `Erro de mídia (código ${code}). ` +
+            "Salve o arquivo no computador e tente novamente, ou converta para MP4/MP3.",
+          ));
+        });
+      });
 
-      el.addEventListener("loadedmetadata", () => {
+      el.addEventListener("loadedmetadata", async () => {
         const duration = el.duration;
-        // Create AudioContext AFTER loadedmetadata so it counts as user-initiated
         const ctx = new AudioContext({ sampleRate: TARGET_SR });
-        // createMediaElementSource captures audio even when el.muted = true
+        await ctx.resume(); // AudioContext may start suspended outside user-gesture
         const source = ctx.createMediaElementSource(el);
         const processor = ctx.createScriptProcessor(4096, 1, 1);
         const silencer = ctx.createGain();
@@ -213,17 +222,24 @@ export default function App() {
         silencer.connect(ctx.destination);
 
         el.addEventListener("ended", () => {
-          processor.disconnect();
-          silencer.disconnect();
-          ctx.close();
-          const total = collected.reduce((s, c) => s + c.length, 0);
-          const out = new Float32Array(total);
-          let off = 0;
-          for (const chunk of collected) { out.set(chunk, off); off += chunk.length; }
-          resolve({ samples: out, duration });
+          finish(() => {
+            processor.disconnect();
+            silencer.disconnect();
+            cleanup(ctx);
+            const total = collected.reduce((s, c) => s + c.length, 0);
+            const out = new Float32Array(total);
+            let off = 0;
+            for (const chunk of collected) { out.set(chunk, off); off += chunk.length; }
+            resolve({ samples: out, duration });
+          });
         });
 
-        el.play().catch(onErr);
+        el.play().catch(() => {
+          finish(() => {
+            cleanup(ctx);
+            reject(new Error("Reprodução bloqueada pelo navegador. Tente novamente."));
+          });
+        });
       });
     });
   }, []);
@@ -422,8 +438,10 @@ export default function App() {
       const url = URL.createObjectURL(f);
       const id = mkId();
       const sizeWarning =
-        (isVideo(f) && f.size > 1_073_741_824) ||
-        (!isVideo(f) && f.size > 209_715_200)
+        f.size === 0
+          ? "Arquivo sem conteúdo (0 bytes). Baixe o arquivo para o seu computador antes de arrastar."
+          : (isVideo(f) && f.size > 1_073_741_824) ||
+            (!isVideo(f) && f.size > 209_715_200)
           ? `Arquivo grande (${fmtSize(f.size)}) — pode ser lento ou falhar.`
           : null;
 
