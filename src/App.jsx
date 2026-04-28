@@ -152,31 +152,35 @@ export default function App() {
     };
 
     // ── Path A: AudioContext.decodeAudioData ──
-    try {
-      const arrayBuf = await item.file.arrayBuffer();
-      // Use native sample rate — more compatible than forcing 16 kHz
-      const ctx = new AudioContext();
-      let decoded;
+    // Only for audio files — video containers (MP4, MKV…) are not reliably
+    // supported by decodeAudioData and the whole file would be loaded into RAM.
+    if (!isVideo(item.file)) {
       try {
-        decoded = await ctx.decodeAudioData(arrayBuf);
-      } finally {
-        ctx.close();
+        const arrayBuf = await item.file.arrayBuffer();
+        const ctx = new AudioContext(); // native sample rate — more compatible
+        let decoded;
+        try {
+          decoded = await ctx.decodeAudioData(arrayBuf);
+        } finally {
+          ctx.close();
+        }
+        const samples = await resample(decoded);
+        return { samples, duration: decoded.duration };
+      } catch (_) {
+        // fall through to Path B
       }
-      const samples = await resample(decoded);
-      return { samples, duration: decoded.duration };
-    } catch (_) {
-      // fall through to Path B
     }
 
     // ── Path B: MediaElement real-time capture ──
+    // Works for all formats the browser can play (audio + video).
+    // NOTE: blob URLs must NOT have crossOrigin set — they are same-origin
+    // and adding crossOrigin causes CORS errors (blob responses have no CORS headers).
     onFallback?.();
 
     return new Promise((resolve, reject) => {
-      // Use <audio> for audio files — better codec support than <video>
       const el = document.createElement(isVideo(item.file) ? "video" : "audio");
       el.src = item.url;
       el.preload = "auto";
-      el.crossOrigin = "anonymous";
 
       const onErr = () =>
         reject(
