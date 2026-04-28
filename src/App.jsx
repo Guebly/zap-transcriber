@@ -205,8 +205,11 @@ export default function App() {
 
       el.addEventListener("loadedmetadata", async () => {
         const duration = el.duration;
-        const ctx = new AudioContext({ sampleRate: TARGET_SR });
+        // Use NATIVE rate — browsers may silently ignore sampleRate:16000.
+        // Capture at whatever rate the context actually runs at, then resample afterward.
+        const ctx = new AudioContext();
         await ctx.resume(); // AudioContext may start suspended outside user-gesture
+        const nativeSR = ctx.sampleRate; // actual rate (usually 44100 or 48000)
         const source = ctx.createMediaElementSource(el);
         const processor = ctx.createScriptProcessor(4096, 1, 1);
         const silencer = ctx.createGain();
@@ -221,16 +224,36 @@ export default function App() {
         processor.connect(silencer);
         silencer.connect(ctx.destination);
 
-        el.addEventListener("ended", () => {
-          finish(() => {
+        el.addEventListener("ended", async () => {
+          finish(async () => {
             processor.disconnect();
             silencer.disconnect();
             cleanup(ctx);
+
+            // Concatenate all captured chunks (at nativeSR)
             const total = collected.reduce((s, c) => s + c.length, 0);
-            const out = new Float32Array(total);
+            const raw = new Float32Array(total);
             let off = 0;
-            for (const chunk of collected) { out.set(chunk, off); off += chunk.length; }
-            resolve({ samples: out, duration });
+            for (const chunk of collected) { raw.set(chunk, off); off += chunk.length; }
+
+            // Resample from nativeSR → 16 kHz using OfflineAudioContext
+            let samples;
+            if (nativeSR === TARGET_SR) {
+              samples = raw;
+            } else {
+              const targetLen = Math.ceil(duration * TARGET_SR);
+              const offCtx = new OfflineAudioContext(1, targetLen, TARGET_SR);
+              const buf = offCtx.createBuffer(1, raw.length, nativeSR);
+              buf.copyToChannel(raw, 0);
+              const bufSrc = offCtx.createBufferSource();
+              bufSrc.buffer = buf;
+              bufSrc.connect(offCtx.destination);
+              bufSrc.start(0);
+              const rendered = await offCtx.startRendering();
+              samples = rendered.getChannelData(0).slice();
+            }
+
+            resolve({ samples, duration });
           });
         });
 
